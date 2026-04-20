@@ -1,0 +1,19 @@
+# Entornos virtuales
+venv/
+.env/
+env/
+
+# Archivos de datos (¡No subas tus datos pesados a GitHub!)
+data/raw/
+data/processed/
+data/external/
+
+# Caché de Python
+__pycache__/
+*.pyc
+
+# Notebooks y archivos de sistema
+.ipynb_checkpoints/
+.DS_Store
+.vscode/
+.idea/
