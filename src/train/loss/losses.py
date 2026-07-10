@@ -17,8 +17,8 @@ class PhysicsInformedLoss(nn.Module):
     Physics-Informed Loss (PIL) engine for stellar spectra prediction (Section 6.5).
     
     Combines a robust Huber Loss baseline with two astrophysical regularizations:
-    - L_flux: Total Integrated Flux Conservation via Riemann Sum integration.
-    - L_grad: Local Gradient Preservation via physical Finite Differences (dF/dlambda).
+    - L_flux: Total Integrated Flux Conservation via Relative Riemann Sum.
+    - L_grad: Local Shape/Gradient Preservation via Finite Differences.
     """
     def __init__(self, wavelength_grid: torch.Tensor, alpha: float = 0.1, beta: float = 0.1, delta: float = 1.0):
         """
@@ -54,14 +54,20 @@ class PhysicsInformedLoss(nn.Module):
         # 1. Base Statistical Loss (Huber) - Robust against instrument noise artifacts
         loss_huber = F.huber_loss(y_pred, y_true, delta=self.delta, reduction="mean")
         
-        # 2. Flux Conservation Loss via formal Riemann Sum Integration
-        integrated_flux_true = torch.sum(y_true * self.delta_lambda_padded, dim=1)
-        integrated_flux_pred = torch.sum(y_pred * self.delta_lambda_padded, dim=1)
-        loss_flux = torch.mean((integrated_flux_true - integrated_flux_pred) ** 2)
+        # 2. Flux Conservation Loss via Normalized Riemann Sum Integration
+        # Multiplicar por delta_lambda_padded calcula el área real bajo la curva (Integral de flujo)
+        integrated_flux_true = torch.sum(y_true * self.delta_lambda_padded.unsqueeze(0), dim=1)
+        integrated_flux_pred = torch.sum(y_pred * self.delta_lambda_padded.unsqueeze(0), dim=1)
         
-        # 3. Gradient Preservation Loss using true physical derivatives (dF / d\lambda)
-        grad_true = (y_true[:, 1:] - y_true[:, :-1]) / self.delta_lambda
-        grad_pred = (y_pred[:, 1:] - y_pred[:, :-1]) / self.delta_lambda
+        # Usamos el error cuadrático medio relativo para evitar que estrellas muy brillantes 
+        # dominen por completo la pérdida frente a las estrellas débiles
+        loss_flux = torch.mean(((integrated_flux_true - integrated_flux_pred) / (integrated_flux_true + 1e-8)) ** 2)
+        
+        # 3. Gradient Preservation Loss (Local Line Shapes)
+        # Eliminamos la división explícita por delta_lambda para mantener la estabilidad numérica.
+        # Al ser una malla homogénea constante, la física de las pendientes se conserva de forma idéntica.
+        grad_true = y_true[:, 1:] - y_true[:, :-1]
+        grad_pred = y_pred[:, 1:] - y_pred[:, :-1]
         loss_grad = torch.mean((grad_true - grad_pred) ** 2)
         
         return loss_huber, loss_flux, loss_grad
@@ -73,7 +79,6 @@ class PhysicsInformedLoss(nn.Module):
         """
         loss_huber, loss_flux, loss_grad = self.compute_decoupled_components(y_pred, y_true)
         return loss_huber + (self.alpha * loss_flux) + (self.beta * loss_grad)
-
 
 
 # Functional Wrappers for Training Loop Compatibility

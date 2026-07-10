@@ -110,6 +110,6 @@ def plot_color_magnitude_diagram(input_csv: str, output_image: str):
     plt.show()
 
 if __name__ == "__main__":
-    input_file = "data/calspec_gaia_dr3_crossmatch.csv"
-    output_image = "data/cmd_calspec.png"
+    input_file = "data/processed/crossmatch_catalog.csv"
+    output_image = "data/cmd_calspec_full_crossmatch.png"
     plot_color_magnitude_diagram(input_file, output_image)

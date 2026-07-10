@@ -85,7 +85,7 @@ def evaluate_baselines(features_path: str, targets_path: str):
 
 if __name__ == "__main__":
     # Standardized paths routing according to the project layout
-    X_DATA_PATH = "data/processed/X.npy"
-    Y_DATA_PATH = "data/processed/Y.npy"
-    
-    evaluate_baselines(X_DATA_PATH, Y_DATA_PATH)
+    X_data_path = "data/processed/X.npy"
+    Y_data_path = "data/processed/Y.npy"
+
+    evaluate_baselines(X_data_path, Y_data_path)
