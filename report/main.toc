@@ -1,0 +1,58 @@
+\babel@toc {spanish}{}\relax 
+\contentsline {section}{\numberline {1}Introducción}{3}{section.1}%
+\contentsline {subsection}{\numberline {1.1}Contexto del problema}{3}{subsection.1.1}%
+\contentsline {subsection}{\numberline {1.2}Objetivos del trabajo}{3}{subsection.1.2}%
+\contentsline {subsection}{\numberline {1.3}Estructura del informe}{4}{subsection.1.3}%
+\contentsline {section}{\numberline {2}Revisión bibliográfica}{5}{section.2}%
+\contentsline {subsection}{\numberline {2.1}Espectros estelares y calibración fotométrica}{5}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}CALSPEC: características y uso en astrofísica}{5}{subsection.2.2}%
+\contentsline {subsection}{\numberline {2.3}Gaia BP/RP: instrumentación y datos}{5}{subsection.2.3}%
+\contentsline {subsection}{\numberline {2.4}Relación entre espectros y observaciones fotométricas}{5}{subsection.2.4}%
+\contentsline {subsection}{\numberline {2.5}Machine Learning en astrofísica}{6}{subsection.2.5}%
+\contentsline {section}{\numberline {3}Entorno computacional y herramientas}{7}{section.3}%
+\contentsline {subsection}{\numberline {3.1}Lenguaje de programación y librerías}{7}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}Estructura del proyecto}{7}{subsection.3.2}%
+\contentsline {subsection}{\numberline {3.3}Gestión de datos y reproducibilidad}{7}{subsection.3.3}%
+\contentsline {section}{\numberline {4}Obtención y preparación de datos}{8}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Descarga de espectros CALSPEC}{8}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}Obtención de datos Gaia BP/RP}{8}{subsection.4.2}%
+\contentsline {subsection}{\numberline {4.3}Cruce de catálogos (cross-match)}{8}{subsection.4.3}%
+\contentsline {subsection}{\numberline {4.4}Preprocesado y limpieza de datos}{8}{subsection.4.4}%
+\contentsline {subsection}{\numberline {4.5}Normalización e interpolación de espectros}{8}{subsection.4.5}%
+\contentsline {section}{\numberline {5}Procesamiento de espectros y degradación de resolución}{10}{section.5}%
+\contentsline {subsection}{\numberline {5.1}El problema de la resolución instrumental}{10}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}Degradación espectral mediante convolución}{10}{subsection.5.2}%
+\contentsline {subsection}{\numberline {5.3}Alineación de rejilla e interpolación}{10}{subsection.5.3}%
+\contentsline {subsection}{\numberline {5.4}Análisis de residuos y preparación del dataset}{10}{subsection.5.4}%
+\contentsline {section}{\numberline {6}Modelos de aprendizaje automático}{12}{section.6}%
+\contentsline {subsection}{\numberline {6.1}Definición del problema de regresión y dirección del modelo}{12}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}Modelos clásicos de referencia (baseline)}{12}{subsection.6.2}%
+\contentsline {subsection}{\numberline {6.3}Redes neuronales artificiales}{12}{subsection.6.3}%
+\contentsline {subsection}{\numberline {6.4}Funciones de pérdida estándar y entrenamiento}{13}{subsection.6.4}%
+\contentsline {subsubsection}{\numberline {6.4.1}Mean Squared Error (MSE)}{13}{subsubsection.6.4.1}%
+\contentsline {subsubsection}{\numberline {6.4.2}Mean Absolute Error (MAE)}{13}{subsubsection.6.4.2}%
+\contentsline {subsubsection}{\numberline {6.4.3}Huber Loss}{13}{subsubsection.6.4.3}%
+\contentsline {subsection}{\numberline {6.5}Función de pérdida informada por la física (Physics-Informed Loss)}{13}{subsection.6.5}%
+\contentsline {subsubsection}{\numberline {6.5.1}Pérdida de Conservación del Flujo $L_{\mathrm {flux}}$}{14}{subsubsection.6.5.1}%
+\contentsline {subsubsection}{\numberline {6.5.2}Pérdida de Preservación del Gradiente $L_{\mathrm {grad}}$}{14}{subsubsection.6.5.2}%
+\contentsline {section}{\numberline {7}Experimentos y resultados}{15}{section.7}%
+\contentsline {subsection}{\numberline {7.1}Entrenamiento con la muestra completa CALSPEC}{15}{subsection.7.1}%
+\contentsline {subsection}{\numberline {7.2}Análisis por subgrupos (enanas blancas)}{15}{subsection.7.2}%
+\contentsline {subsection}{\numberline {7.3}Generalización del modelo}{15}{subsection.7.3}%
+\contentsline {subsection}{\numberline {7.4}Análisis de robustez y ruido}{15}{subsection.7.4}%
+\contentsline {section}{\numberline {8}Extensión del conjunto de datos (LOWLIB)}{16}{section.8}%
+\contentsline {subsection}{\numberline {8.1}Integración de LOWLIB}{16}{subsection.8.1}%
+\contentsline {subsection}{\numberline {8.2}Reentrenamiento de modelos}{16}{subsection.8.2}%
+\contentsline {subsection}{\numberline {8.3}Comparación de resultados}{16}{subsection.8.3}%
+\contentsline {section}{\numberline {9}Discusión}{17}{section.9}%
+\contentsline {subsection}{\numberline {9.1}Interpretación de resultados físicos}{17}{subsection.9.1}%
+\contentsline {subsection}{\numberline {9.2}Limitaciones del modelo}{17}{subsection.9.2}%
+\contentsline {subsection}{\numberline {9.3}Comparación con métodos existentes}{17}{subsection.9.3}%
+\contentsline {section}{\numberline {10}Conclusiones y trabajo futuro}{18}{section.10}%
+\contentsline {subsection}{\numberline {10.1}Conclusiones principales}{18}{subsection.10.1}%
+\contentsline {subsection}{\numberline {10.2}Posibles mejoras}{18}{subsection.10.2}%
+\contentsline {subsection}{\numberline {10.3}Líneas futuras de investigación}{18}{subsection.10.3}%
+\contentsline {section}{\numberline {A}Apéndice: detalles de implementación}{20}{appendix.Alph1}%
+\contentsline {subsection}{\numberline {A.1}Código y estructura del repositorio}{20}{subsection.Alph1.1}%
+\contentsline {subsection}{\numberline {A.2}Parámetros de entrenamiento}{20}{subsection.Alph1.2}%
+\contentsline {subsection}{\numberline {A.3}Información adicional de datos}{20}{subsection.Alph1.3}%
