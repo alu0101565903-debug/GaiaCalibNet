@@ -3,9 +3,8 @@ Module: adp_training_strategies.py
 Report Section: Chapter 7 Training Strategies & Hyperparameter Optimization
 
 This module implements the robust 2-Stage Adaptive Training. It utilizes 
-Self-Adaptive Weights to dynamically balance the competing gradients of 
-the data regression loss (MSE), the flux conservation penalty (L_flux), 
-and the Balmer line gradient preservation penalty (L_grad).
+Self-Adaptive Weights equipped with log-barrier penalties to dynamically balance 
+the competing gradients of data regression, flux conservation, and gradient preservation.
 """
 
 import torch
@@ -14,31 +13,12 @@ from tqdm import tqdm
 
 def train_adam_adaptive(model, epochs, dataloader, physics_criterion, lr=0.001):
     """
-    Stage 1: Adaptive training using Adam optimizer with stability safeguards.
+    Stage 1: Adaptive training using Adam optimizer with stable log-barrier penalties.
     Dynamically balances the Data, Flux, and Gradient loss components.
-
-    Parameters:
-    -----------
-    model : nn.Module
-        The SpectralRecalibrationMLP network.
-    epochs : int
-        Number of epochs for the Adam training phase.
-    dataloader : torch.utils.data.DataLoader
-        PyTorch DataLoader providing (X_batch, Y_batch) pairs.
-    physics_criterion : callable
-        Custom loss object/function that computes and returns the tuple:
-        (loss_data, loss_flux, loss_grad).
-    lr : float
-        Initial learning rate.
-
-    Returns:
-    --------
-    tuple
-        (Trained model, list of logarithmic adaptive weights).
     """
     device = next(model.parameters()).device
     
-    # 1. Initialize adaptive weights for Data (MSE), Flux Conservation, and Gradient (Balmer)
+    # 1. Initialize adaptive weights for Data (Huber), Flux Conservation, and Gradient
     log_w_data = nn.Parameter(torch.tensor(0.0, device=device))
     log_w_flux = nn.Parameter(torch.tensor(0.0, device=device))
     log_w_grad = nn.Parameter(torch.tensor(0.0, device=device))
@@ -68,8 +48,9 @@ def train_adam_adaptive(model, epochs, dataloader, physics_criterion, lr=0.001):
             # --- B. Compute physical loss components ---
             loss_data, loss_flux, loss_grad = physics_criterion(model, X_batch, Y_batch)
 
-            # Linearly combine terms using the self-adaptive weighting scheme
-            total_loss = (w_data * loss_data) + (w_flux * loss_flux) + (w_grad * loss_grad)
+            # CORRECCIÓN CRÍTICA: Añadimos el castigo logarítmico para evitar que los pesos colapsen a 0
+            penalty = log_w_data + log_w_flux + log_w_grad
+            total_loss = (w_data * loss_data) + (w_flux * loss_flux) + (w_grad * loss_grad) - penalty
             
             # --- C. Safety validation to prevent exploding gradients ---
             if torch.isnan(total_loss):
@@ -79,7 +60,6 @@ def train_adam_adaptive(model, epochs, dataloader, physics_criterion, lr=0.001):
             total_loss.backward()
             
             # --- D. Dual Gradient Clipping ---
-            # Separate clipping rules for network weights and adaptive parameters
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             torch.nn.utils.clip_grad_norm_(log_weights, max_norm=0.1) 
             
@@ -101,8 +81,6 @@ def train_adam_adaptive(model, epochs, dataloader, physics_criterion, lr=0.001):
 def train_lbfgs_adaptive(model, X_full, Y_full, log_weights, physics_criterion, steps=10):
     """
     Stage 2: Refinement stage using L-BFGS optimizer for high-precision convergence.
-    Since L-BFGS requires evaluation of the full dataset (or very large batches), 
-    we pass the full X and Y matrices directly.
     """
     device = next(model.parameters()).device
     X_full, Y_full = X_full.to(device), Y_full.to(device)
@@ -116,7 +94,7 @@ def train_lbfgs_adaptive(model, X_full, Y_full, log_weights, physics_criterion, 
     pbar = tqdm(total=steps * max_iter_per_step, desc=">>> Stage 2: L-BFGS Refinement", unit="it")
     
     def closure():
-        # --- E. Enforce strict clamp inside closure (Critical for L-BFGS stability) ---
+        # --- E. Enforce strict clamp inside closure ---
         with torch.no_grad():
             for lw in log_weights:
                 lw.clamp_(-5.0, 5.0)
@@ -126,7 +104,10 @@ def train_lbfgs_adaptive(model, X_full, Y_full, log_weights, physics_criterion, 
         loss_data, loss_flux, loss_grad = physics_criterion(model, X_full, Y_full)
 
         w_data, w_flux, w_grad = torch.exp(log_weights[0]), torch.exp(log_weights[1]), torch.exp(log_weights[2])
-        total_loss = (w_data * loss_data) + (w_flux * loss_flux) + (w_grad * loss_grad)
+        
+        # CORRECCIÓN CRÍTICA: Mantenemos el castigo logarítmico también en la optimización de segundo orden
+        penalty = log_weights[0] + log_weights[1] + log_weights[2]
+        total_loss = (w_data * loss_data) + (w_flux * loss_flux) + (w_grad * loss_grad) - penalty
         
         if total_loss.requires_grad:
             total_loss.backward()
@@ -134,7 +115,7 @@ def train_lbfgs_adaptive(model, X_full, Y_full, log_weights, physics_criterion, 
         pbar.update(1)
         pbar.set_postfix({
             "Loss": f"{total_loss.item():.4e}",
-            "Weights": f"({w_data:.1f}, {w_flux:.1f}, {w_grad:.1f})"
+            "Weights": f"({w_data.item():.1f}, {w_flux.item():.1f}, {w_grad.item():.1f})"
         })
         return total_loss
     
@@ -149,8 +130,6 @@ def train_lbfgs_adaptive(model, X_full, Y_full, log_weights, physics_criterion, 
 def train_2stage_adaptive(model, dataloader, X_full, Y_full, physics_criterion, epochs_adam=1000, steps_lbfgs=10):
     """
     Executes the complete 2-stage adaptive training pipeline.
-    First drives the model to a stable basin using Adam, then refines the continuous
-    spectral manifold using L-BFGS.
     """
     print("=" * 60)
     print("[7.1] EXECUTING 2-STAGE ADAPTIVE TRAINING PIPELINE")

@@ -17,3 +17,10 @@ __pycache__/
 .DS_Store
 .vscode/
 .idea/
+
+# Generated outputs and model checkpoints
+results/
+*.joblib
+*.pt
+.pytest_cache/
+*.log

@@ -14,6 +14,8 @@ seaborn>=0.13.0
 
 # Machine Learning and Deep Learning
 scikit-learn>=1.4.0
+joblib>=1.3.2
+requests>=2.31.0
 torch>=2.2.0
 h5py>=3.10.0         # Useful for saving large datasets of spectra efficiently
 
@@ -21,6 +23,7 @@ h5py>=3.10.0         # Useful for saving large datasets of spectra efficiently
 jupyterlab>=4.1.0
 tqdm>=4.66.0         # Progress bars for training loops
 pyyaml>=6.0.1        # To save and load your model configurations
+pytest>=8.0.0        # Testing framework for repository smoke tests
 
 
 #lxml
