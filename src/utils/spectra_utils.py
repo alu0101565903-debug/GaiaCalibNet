@@ -62,7 +62,7 @@ def interpolate_to_grid(wavelengths: np.ndarray, flux: np.ndarray, target_grid: 
     flux : np.ndarray
         Original flux values.
     target_grid : np.ndarray
-        The standardized wavelength grid (\Lambda) for the neural network.
+        The standardized wavelength grid (Lambda) for the neural network.
         
     Returns
     -------

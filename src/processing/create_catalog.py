@@ -18,7 +18,7 @@ from astropy.coordinates import SkyCoord
 from astropy.io import fits
 
 # Ignore Astropy and Pandas runtime warnings for cleaner terminal reporting
-warnings.filterwarnings('ignore')
+warnings.filterwarnings("ignore")
 
 def clean_target_name(name: str, prefix: str) -> str:
     """
@@ -33,17 +33,17 @@ def clean_target_name(name: str, prefix: str) -> str:
     - str: A normalized astronomical star identifier string.
     """
     base_name = name.upper() if name else prefix.upper()
-    
+
     # Regular expressions to enforce standard cross-matching nomenclatures
-    base_name = re.sub(r'^WD(\d{4})_(\d{3,4})$', r'WD \1-\2', base_name)
-    base_name = re.sub(r'^WDFS(\d{4})_(\d{2})$', r'WDFS \1-\2', base_name)
-    base_name = re.sub(r'^NGC(\d+)_(\d+)$', r'NGC \1 \2', base_name)
-    base_name = re.sub(r'^BD_?(\d+)D(\d+)$', r'BD+\1 \2', base_name)
-    base_name = re.sub(r'^2M(\d{6,})$', r'2MASS J\1', base_name)
+    base_name = re.sub(r"^WD(\d{4})_(\d{3,4})$", r"WD \1-\2", base_name)
+    base_name = re.sub(r"^WDFS(\d{4})_(\d{2})$", r"WDFS \1-\2", base_name)
+    base_name = re.sub(r"^NGC(\d+)_(\d+)$", r"NGC \1 \2", base_name)
+    base_name = re.sub(r"^BD_?(\d+)D(\d+)$", r"BD+\1 \2", base_name)
+    base_name = re.sub(r"^2M(\d{6,})$", r"2MASS J\1", base_name)
     
     # Standardize string dividers
-    base_name = base_name.replace('_', ' ')
-    base_name = re.sub(r'^(\d+)([A-Z]+)$', r'\1 \2', base_name)
+    base_name = base_name.replace("_", " ")
+    base_name = re.sub(r"^(\d+)([A-Z]+)$", r"\1 \2", base_name)
     
     return base_name.strip()
 
@@ -102,26 +102,26 @@ def create_catalog(output_path: str):
     # Group file variants matching identical target star roots
     star_files = {}
     for f in fits_files:
-        match = re.search(r'^(.+?)_(mod|stis|nic|stiswfcnic|stiswfc|faint)', f)
+        match = re.search(r"^(.+?)_(mod|stis|nic|stiswfcnic|stiswfc|faint)$", f)
         if match:
             prefix = match.group(1)
             star_files.setdefault(prefix, []).append(f)
             
     star_data = []
-    print(f"-> Found {len(star_files)} distinct target groups. Processing metadata headers...")
+    print(f"-> Found {len(star_files)} distinct target groups. Processing headers...")
     
     for prefix, files in star_files.items():
-        # Optimization heuristic: Prioritize observational datasets over theoretical model grids ('mod')
-        best_file = sorted(files, key=lambda x: 0 if 'mod' not in x else 1)[0]
+        # Optimization heuristic: Prioritize observational datasets over theoretical model grids ("mod")
+        best_file = sorted(files, key=lambda x: 0 if "mod" not in x else 1)[0]
         
         try:
             # Stream and pull the remote FITS primary header records via URL connection
             header = fits.getheader(base_url + best_file)
-            raw_name = header.get('TARGNAME', prefix)
+            raw_name = header.get("TARGNAME", prefix)
             
             # Extract standard spatial coordinates fields
-            ra = header.get('RA_TARG', header.get('RA'))
-            dec = header.get('DEC_TARG', header.get('DEC'))
+            ra = header.get("RA_TARG", header.get("RA"))
+            dec = header.get("DEC_TARG", header.get("DEC"))
             
             # Trigger SIMBAD/Sesame resolution loop if header positions are blank or invalid
             if not is_valid_coord(ra) or not is_valid_coord(dec):
@@ -130,17 +130,17 @@ def create_catalog(output_path: str):
                 
             if ra is not None and dec is not None:
                 star_data.append({
-                    'calspec_name': raw_name,
-                    'RA': float(ra),
-                    'DEC': float(dec),
-                    'fits_file': best_file
+                    "calspec_name": raw_name,
+                    "RA": float(ra),
+                    "DEC": float(dec),
+                    "fits_file": best_file
                 })
         except Exception:
             # Silently skip unreadable headers or transient streaming connection timeouts
             continue
 
     if star_data:
-        df = pd.DataFrame(star_data).dropna(subset=['RA', 'DEC'])
+        df = pd.DataFrame(star_data).dropna(subset=["RA", "DEC"])
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         df.to_csv(output_path, index=False)
         
@@ -155,5 +155,5 @@ def create_catalog(output_path: str):
 
 if __name__ == "__main__":
     # Standardized paths according to the project layout requirements (Section 3.2)
-    RAW_CATALOG_PATH = "data/raw/calspec_catalog.csv"
-    create_catalog(RAW_CATALOG_PATH)
+    raw_catalog_path = "data/raw/calspec_catalog.csv"
+    create_catalog(raw_catalog_path)

@@ -17,7 +17,7 @@ from astropy.time import Time
 from astroquery.gaia import Gaia
 
 # Silence astronomical warnings to keep the terminal clean
-warnings.filterwarnings('ignore')
+warnings.filterwarnings("ignore")
 
 def run_crossmatch(input_csv: str, output_csv: str, max_separation_arcsec: float = 1.0):
     """
@@ -32,26 +32,26 @@ def run_crossmatch(input_csv: str, output_csv: str, max_separation_arcsec: float
         print(f"[!] Critical Error: File {input_csv} does not exist.")
         return
 
-    df_calspec = pd.read_csv(input_csv, encoding='utf-8-sig')
+    df_calspec = pd.read_csv(input_csv, encoding="utf-8-sig")
     df_calspec.columns = df_calspec.columns.str.strip()
     print(f"-> Loading {len(df_calspec)} targets from CALSPEC catalog...")
     
     crossmatch_data = []
 
     for idx, row in df_calspec.iterrows():
-        target_name = row.get('calspec_name', row.get('Name'))
-        ra_calspec = row.get('ra_calspec', row.get('RA'))
-        dec_calspec = row.get('dec_calspec', row.get('DEC'))
-        fits_file = row.get('fits_file', row.get('File_Source'))
+        target_name = row.get("calspec_name", row.get("Name"))
+        ra_calspec = row.get("ra_calspec", row.get("RA"))
+        dec_calspec = row.get("dec_calspec", row.get("DEC"))
+        fits_file = row.get("fits_file", row.get("File_Source"))
         
         if pd.isna(ra_calspec) or pd.isna(dec_calspec):
             continue
 
-        # Coordenadas base de CALSPEC en J2000
+        # CALSPEC base coordinates in J2000
         coord_calspec = SkyCoord(ra=ra_calspec, dec=dec_calspec, unit=(u.deg, u.deg), frame='icrs')
 
-        # CONSULTA ADQL ULTRA-ESTABLE:
-        # Buscamos en un radio de 3" en J2016.0 y filtramos por la existencia de XP continuos
+        # ULTRA-STABLE ADQL QUERY:
+        # Search within a 3" radius in J2016.0 and filter for the presence of continuous XP
         query = f"""
         SELECT 
             source_id, ra, dec, parallax, pmra, pmdec, phot_g_mean_mag, bp_rp, ruwe
@@ -60,12 +60,12 @@ def run_crossmatch(input_csv: str, output_csv: str, max_separation_arcsec: float
             POINT('ICRS', ra, dec),
             CIRCLE('ICRS', {ra_calspec}, {dec_calspec}, {3.0 / 3600.0})
         )
-        AND has_xp_continuous = 'True'
+        AND has_xp_continuous = "True"
         AND ruwe < 1.4
         """
         
         try:
-            # Lanzamos el trabajo asíncrono
+            # Launch the asynchronous job
             job = Gaia.launch_job_async(query, verbose=False)
             results = job.get_results()
             
@@ -73,54 +73,54 @@ def run_crossmatch(input_csv: str, output_csv: str, max_separation_arcsec: float
                 candidates = []
                 
                 for match in results:
-                    # Rellenamos movimientos propios nulos con 0 por estabilidad
-                    pmra_val = 0.0 if np.isnan(match['pmra']) else match['pmra']
-                    pmdec_val = 0.0 if np.isnan(match['pmdec']) else match['pmdec']
-                    plx_val = 0.0 if np.isnan(match['parallax']) or match['parallax'] <= 0 else match['parallax']
+                    # Fill missing proper motions with 0 for stability
+                    pmra_val = 0.0 if np.isnan(match["pmra"]) else match["pmra"]
+                    pmdec_val = 0.0 if np.isnan(match["pmdec"]) else match["pmdec"]
+                    plx_val = 0.0 if np.isnan(match["parallax"]) or match["parallax"] <= 0 else match["parallax"]
 
-                    # Creamos la coordenada de Gaia en su época nativa (DR3 = J2016.0) incluyendo sus movimientos
+                    # Create the Gaia coordinate in its native epoch (DR3 = J2016.0), including proper motions
                     coord_gaia_j2016 = SkyCoord(
-                        ra=match['ra'] * u.deg, 
-                        dec=match['dec'] * u.deg, 
+                        ra = match["ra"] * u.deg, 
+                        dec = match["dec"] * u.deg, 
                         distance=None if plx_val == 0 else (1000.0 / plx_val) * u.pc,
-                        pm_ra_cosdec=pmra_val * u.mas / u.yr,
-                        pm_dec=pmdec_val * u.mas / u.yr,
-                        obstime=Time('J2016.0'),
-                        frame='icrs'
+                        pm_ra_cosdec = pmra_val * u.mas / u.yr,
+                        pm_dec = pmdec_val * u.mas / u.yr,
+                        obstime = Time("J2016.0"),
+                        frame = "icrs"
                     )
                     
-                    # [ERROR 1: CORREGIDO] Propagamos la estrella de Gaia en el tiempo hacia atrás (de J2016.0 a J2000.0)
-                    coord_gaia_j2000 = coord_gaia_j2016.apply_space_motion(new_obstime=Time('J2000.0'))
-                    
-                    # [ERROR 9: CORREGIDO] Medimos la separación angular real en la ÉPOCA COMÚN J2000
+                    # Propagate the Gaia star backward in time (from J2016.0 to J2000.0)
+                    coord_gaia_j2000 = coord_gaia_j2016.apply_space_motion(new_obstime=Time("J2000.0"))
+
+                    # Measure the true angular separation in the common epoch J2000
                     angular_sep = coord_calspec.separation(coord_gaia_j2000).arcsec
-                    
-                    # [ERROR 3: CORREGIDO] Filtro estricto de umbral (< 1.0 arcsec)
+
+                    # Strict threshold filter (<= max_separation_arcsec)
                     if angular_sep <= max_separation_arcsec:
                         candidates.append((angular_sep, match))
                 
                 if candidates:
-                    # [ERROR 2: CORREGIDO] El candidato más cercano físicamente gana la asignación
+                    # Choose the physically closest candidate as the match
                     candidates.sort(key=lambda x: x[0])
                     best_sep, best_match = candidates[0]
                     
                     crossmatch_data.append({
-                        'calspec_name': target_name,
-                        'ra_calspec': ra_calspec,
-                        'dec_calspec': dec_calspec,
-                        'fits_file': fits_file,
-                        'gaia_source_id': str(best_match['source_id']),
-                        'ra_gaia': best_match['ra'],
-                        'dec_gaia': best_match['dec'],
-                        'angular_distance_arcsec': best_sep,
-                        'parallax': best_match['parallax'],
-                        'pmra': best_match['pmra'],
-                        'pmdec': best_match['pmdec'],
-                        'phot_g_mean_mag': best_match['phot_g_mean_mag'],
-                        'bp_rp': best_match['bp_rp'],
-                        'ruwe': best_match['ruwe']
+                        "calspec_name": target_name,
+                        "ra_calspec": ra_calspec,
+                        "dec_calspec": dec_calspec,
+                        "fits_file": fits_file,
+                        "gaia_source_id": str(best_match["source_id"]),
+                        "ra_gaia": best_match["ra"],
+                        "dec_gaia": best_match["dec"],
+                        "angular_distance_arcsec": best_sep,
+                        "parallax": best_match["parallax"],
+                        "pmra": best_match["pmra"],
+                        "pmdec": best_match["pmdec"],
+                        "phot_g_mean_mag": best_match["phot_g_mean_mag"],
+                        "bp_rp": best_match["bp_rp"],
+                        "ruwe": best_match["ruwe"]
                     })
-                    print(f"  [✓] {target_name:<15} -> MATCHED at {best_sep:.3f}\" (G-mag: {best_match['phot_g_mean_mag']:.2f})")
+                    print(f"  [✓] {target_name:<15} -> MATCHED at {best_sep:.3f}\" (G-mag: {best_match["phot_g_mean_mag"]:.2f})")
                 else:
                     print(f"  [X] {target_name:<15} -> Filtered out (No candidates within {max_separation_arcsec}\" at J2000)")
             else:
@@ -130,11 +130,11 @@ def run_crossmatch(input_csv: str, output_csv: str, max_separation_arcsec: float
             print(f"  [!] Query failed for {target_name}: {e}")
             continue
 
-    # [ERROR 5: CORREGIDO] Eliminación de duplicados de ID
+    # Remove duplicate Gaia source IDs
     if crossmatch_data:
         df_final = pd.DataFrame(crossmatch_data)
         initial_len = len(df_final)
-        df_final = df_final.sort_values('angular_distance_arcsec').drop_duplicates(subset=['gaia_source_id'], keep='first')
+        df_final = df_final.sort_values("angular_distance_arcsec").drop_duplicates(subset=["gaia_source_id"], keep="first")
         duplicate_count = initial_len - len(df_final)
         
         if duplicate_count > 0:

@@ -32,17 +32,17 @@ def download_missing_fits(csv_path: str, output_dir_str: str):
     # 2. Pre-execution checks
     if not csv_file.exists():
         print(f"[!] Error: Crossmatch catalog not found at {csv_path}")
-        print("Please run 'crossmatch_wd.py' before executing this download task.")
+        print('Please run "crossmatch_wd.py" before executing this download task.')
         return
 
     # Load the processed data
     df = pd.read_csv(csv_file)
-    if 'fits_file' not in df.columns:
+    if "fits_file" not in df.columns:
         print("[!] Error: Column 'fits_file' missing from the crossmatch catalog.")
         return
     
     # Isolate unique FITS files to avoid duplicate downloads
-    required_files = df['fits_file'].dropna().unique()
+    required_files = df["fits_file"].dropna().unique()
     
     # Ensure the output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)

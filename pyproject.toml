@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "iac_gaia"
+version = "0.1.0"
+description = "Gaia DR3 and CALSPEC spectral recalibration pipeline."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+dependencies = [
+    "numpy>=1.26.0",
+    "pandas>=2.1.0",
+    "scipy>=1.11.0",
+    "pyarrow>=15.0.0",
+    "astropy>=6.0.0",
+    "astroquery>=0.4.7",
+    "matplotlib>=3.8.0",
+    "seaborn>=0.13.0",
+    "scikit-learn>=1.4.0",
+    "torch>=2.2.0",
+    "h5py>=3.10.0",
+    "jupyterlab>=4.1.0",
+    "tqdm>=4.66.0",
+    "pyyaml>=6.0.1",
+    "joblib>=1.3.2",
+    "requests>=2.31.0",
+    "pytest>=8.0.0",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/example/IAC_GAIA"
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-q"
+testpaths = ["tests"]

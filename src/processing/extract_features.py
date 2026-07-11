@@ -26,14 +26,14 @@ def extract_gaia_features(csv_path: str, output_path: str):
     print("=" * 60)
     
     if not os.path.exists(csv_path):
-        print(f"[!] ERROR: No se encuentra {csv_path}")
+        print(f"[!] ERROR: Not able to find {csv_path}")
         return
         
     # Read CSV treating common non-numeric markers as NaN
-    df = pd.read_csv(csv_path, na_values=['--', '-', 'NA', 'N/A', ''])
+    df = pd.read_csv(csv_path, na_values=["--", "-", "NA", "N/A", ""])
 
     # Standard feature selection matching report specifications
-    feature_cols = ['parallax', 'pmra', 'pmdec', 'phot_g_mean_mag', 'bp_rp']
+    feature_cols = ["parallax", "pmra", "pmdec", "phot_g_mean_mag", "bp_rp"]
 
     # Ensure all required metadata columns exist
     missing_cols = [c for c in feature_cols if c not in df.columns]
@@ -45,7 +45,7 @@ def extract_gaia_features(csv_path: str, output_path: str):
 
     # Coerce columns to numeric (turn any remaining non-numeric strings into NaN)
     for col in feature_cols:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
+        df[col] = pd.to_numeric(df[col], errors="coerce")
 
     # Data imputation: handle missing values by filling them with the dataset median
     medians = df[feature_cols].median()

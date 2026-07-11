@@ -33,8 +33,8 @@ def load_calspec_fits(fits_path: str) -> tuple:
     """
     with fits.open(fits_path) as hdul:
         data = hdul[1].data
-        wave_length_angstroms = np.array(data['WAVELENGTH'], dtype=float)
-        flux = np.array(data['FLUX'], dtype=float)
+        wave_length_angstroms = np.array(data["WAVELENGTH"], dtype=float)
+        flux = np.array(data["FLUX"], dtype=float)
         
         # Convert Angstroms to Nanometers (1 nm = 10 Angstroms)
         wave_length_nm = wave_length_angstroms / 10.0
@@ -50,7 +50,9 @@ def degrade_spectral_resolution(wave_nm: np.ndarray, flux: np.ndarray, sigma_nm:
     - flux (np.ndarray): Source flux profile.
     - sigma_nm (float): Line Spread Function (LSF) smoothing scale.
     Returns:
-        tuple : (degraded wavelength grid, degraded flux profile)"""
+        tuple : (degraded wavelength grid, degraded flux profile)
+    """
+    
     fine_grid = np.linspace(wave_nm.min(), wave_nm.max(), len(wave_nm) * 2)
     interp_func = interp1d(wave_nm, flux, kind='linear', fill_value="extrapolate")
     fine_flux = interp_func(fine_grid)
@@ -68,18 +70,24 @@ def normalize_spectrum(flux_array: np.ndarray) -> np.ndarray:
     Parameters:
     - flux_array (np.ndarray): The flux values to normalize.
     Returns:
-    - np.ndarray : The normalized flux values."""
+    - np.ndarray : The normalized flux values.
+    """
     total_area = trapezoid(flux_array, wave_length_grid)
     if total_area == 0:
         return flux_array
     return flux_array / total_area
 
-def mock_load_gaia_observed_spectrum(source_id: str, calspec_wave: np.ndarray, calspec_flux_degraded: np.ndarray) -> np.ndarray:
+def mock_load_gaia_observed_spectrum(calspec_wave: np.ndarray, calspec_flux_degraded: np.ndarray) -> np.ndarray:
     """
     A template loader function for Gaia BP/RP observed sampled spectra.
     Simulates instrumental systematic bias and random noise (Section 5.4).
+    Parameters:
+    - calspec_wave (np.ndarray): The wavelength array from degraded CALSPEC.
+    - calspec_flux_degraded (np.ndarray): The degraded flux array from CALSPEC
+    Returns:
+    - observed_gaia_flux (np.ndarray) : Simulated Gaia observed flux array aligned to the common grid.
     """
-    interp_func = interp1d(calspec_wave, calspec_flux_degraded, kind='cubic', fill_value="extrapolate")
+    interp_func = interp1d(calspec_wave, calspec_flux_degraded, kind="cubic", fill_value="extrapolate")
     clean_sampled_flux = interp_func(wave_length_grid)
     
     # Simulating instrumental systematic bias and random noise (Section 5.4)
@@ -118,7 +126,7 @@ def build_and_save_dataset(csv_metadata_path: str, calspec_dir: str, output_dir:
     print(f"Starting pipeline processing for {len(df)} stars...")
     print(f"Searching FITS data inside: {abs_calspec_dir}")
     
-    # --- DIAGNOSTIC BLOCK ---
+    # DIAGNOSTIC BLOCK 
     if not os.path.exists(abs_calspec_dir):
         print(f"  [!] CRITICAL: The directory does not exist physically: {abs_calspec_dir}")
         files_in_dir = []
@@ -133,9 +141,9 @@ def build_and_save_dataset(csv_metadata_path: str, calspec_dir: str, output_dir:
     print("-" * 60)
     
     for idx, row in df.iterrows():
-        star_name = str(row['calspec_name']).strip()
-        fits_filename = str(row['fits_file']).strip()
-        gaia_id = str(row['gaia_source_id']) if 'gaia_source_id' in row else "0"
+        star_name = str(row["calspec_name"]).strip()
+        fits_filename = str(row["fits_file"]).strip()
+        gaia_id = str(row["gaia_source_id"]) if "gaia_source_id" in row else "0"
         
         matched_filename = None
         
@@ -145,12 +153,12 @@ def build_and_save_dataset(csv_metadata_path: str, calspec_dir: str, output_dir:
         else:
             # 2. Case-Insensitive & Pattern Fallback Check
             star_name_lower = star_name.lower()
-            fits_filename_lower = fits_filename_lower = fits_filename.lower()
+            fits_filename_lower = fits_filename.lower()
             
             for f in files_in_dir:
                 f_lower = f.lower()
                 # Check match against lowercase filename or star prefix
-                if f_lower == fits_filename_lower or (f_lower.startswith(star_name_lower) and (f_lower.endswith('.fits') or f_lower.endswith('.fit'))):
+                if f_lower == fits_filename_lower or (f_lower.startswith(star_name_lower) and (f_lower.endswith(".fits") or f_lower.endswith(".fit"))):
                     matched_filename = f
                     break
                     
@@ -172,7 +180,7 @@ def build_and_save_dataset(csv_metadata_path: str, calspec_dir: str, output_dir:
             y_flux_aligned = y_interp_func(wave_length_grid)
             
             # 4. Load/Fetch the corresponding Gaia BP/RP spectrum (X)
-            x_flux_raw = mock_load_gaia_observed_spectrum(gaia_id, deg_wave, deg_flux)
+            x_flux_raw = mock_load_gaia_observed_spectrum(deg_wave, deg_flux)
             
             # 5. Apply continuous normalization scaling (Section 4.5)
             x_normalized = normalize_spectrum(x_flux_raw)
@@ -214,7 +222,7 @@ def build_and_save_dataset(csv_metadata_path: str, calspec_dir: str, output_dir:
 if __name__ == "__main__":
     # Path configuration synchronized with the project routing layout (Section 3.2)
     csv_path = "data/processed/crossmatch_catalog.csv"
-    calspec_dir = "data/raw/calspec_fits/"  # <-- Añade aquí el _fits
+    calspec_dir = "data/raw/calspec_fits/" 
     processed_data_dir = "data/processed/"
     
     build_and_save_dataset(csv_path, calspec_dir, processed_data_dir)
