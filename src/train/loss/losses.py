@@ -83,6 +83,18 @@ class PhysicsInformedLoss(nn.Module):
 
 # Functional Wrappers for Training Loop Compatibility
 
+# Force the multiplication of alpha and beta BEFORE sending it to the adaptive 
+# loop so L-BFGS sees the smoothed landscape.
+def scaled_physics_wrapper(m, x, y, loss_inst):
+    """
+    A wrapper function that computes the decoupled loss components and scales them
+    by their respective alpha and beta weights. This is essential for adaptive training loops
+    where the optimizer needs to see a single scalar loss value.
+    """
+    huber, flux, grad = loss_inst.compute_decoupled_components(m(x), y)
+    return huber, flux * loss_inst.alpha, grad * loss_inst.beta
+         
+
 def adaptive_physics_wrapper(model, X_batch, Y_batch, loss_instance: PhysicsInformedLoss):
     """
     Interface wrapper linking the Neural Network forward pass outputs directly 

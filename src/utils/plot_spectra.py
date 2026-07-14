@@ -60,18 +60,7 @@ def plot_sample_stars():
             pass
 
     # Save to results/plots or data/processed/plots
-    out_dir_candidates = ["results/plots", "data/processed/plots"]
-    out_dir = None
-    for c in out_dir_candidates:
-        try:
-            os.makedirs(c, exist_ok=True)
-            out_dir = c
-            break
-        except Exception:
-            continue
-
-    if out_dir is None:
-        out_dir = "."
+    out_dir = "results/plots"
 
     out_path = os.path.join(out_dir, "sample_stars.png")
     plt.savefig(out_path, dpi=150, bbox_inches='tight')

@@ -3,10 +3,9 @@ Module: train_nn.py
 Report Section: Chapter 7 Training Strategies & PINN Evaluation
 
 This script orchestrates the training of the Physics-Informed Neural Network (PINN).
-It applies coordinated scaling, executes the robust 2-stage adaptive training pipeline,
-and handles seamless descaling during evaluation to guarantee mathematical accuracy.
 """
 
+import random
 import os
 import numpy as np
 import torch
@@ -16,173 +15,178 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import r2_score, mean_squared_error
 
-# CORREGIDO: Importamos la clase exacta que modificamos con la física multiplicativa
 from src.models.neural_net import SpectralRecalibrationMLP
-from src.train.loss.losses import PhysicsInformedLoss, adaptive_physics_wrapper
+from src.train.loss.losses import PhysicsInformedLoss, scaled_physics_wrapper
 from src.train.training_functions.adp_training_strategies import train_2stage_adaptive
+
+def set_seed(seed: int = 42):
+    """
+    Sets the computational seed across all libraries to ensure 
+    reproducibility of the results.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
 def train_network(mode: str = "spectrum"):
     """
-    Executes or skips the training pipeline for the PINN based on whether a 
-    pre-trained joblib checkpoint exists. It then evaluates the model on the test set.
+    Executes the PINN training and evaluation pipeline.
+    
+    Args:
+        mode (str): Training mode, either "spectrum" for full 285D data (280D + 5D features), 
+                    or "features" for baseline 5D feature training.
     """
-    print("=" * 60)
+    print("\n" + "=" * 60)
     print(f"[7.2] INITIATING PINN TRAINING PIPELINE | MODE: {mode.upper()}")
     print("=" * 60)
     
-    # 1. Path and Dimensionality Configuration
-    if mode == "spectrum":
-        features_path = "data/processed/X.npy"
-        input_dim = 300
-    elif mode == "features":
-        features_path = "data/processed/X_features.npy"
-        input_dim = 5
-    else:
-        raise ValueError("Mode must be either 'spectrum' or 'features'.")
-        
+    is_spectrum = (mode == "spectrum")
     targets_path = "data/processed/Y.npy"
     
-    if not os.path.exists(features_path) or not os.path.exists(targets_path):
-        print(f"[!] Error: Dataset binaries not found for mode '{mode}'.")
-        return
+    # 1. DATA LOADING AND DIMENSION MERGING
+    if is_spectrum:
+        print("-> Loading both Spectrum (280D) and Features (5D) arrays...")
+        X_spec = np.load("data/processed/X.npy")
+        X_feat = np.load("data/processed/X_features.npy")
+        X_data = np.concatenate([X_spec, X_feat], axis=1)  # Master tensor: 285D
+        input_dim = 285
+    else:
+        X_data = np.load("data/processed/X_features.npy")
+        input_dim = 5
+        
+    Y_data = np.load(targets_path)
 
-    # 2. Data Loading and Splitting
-    X = np.load(features_path)
-    Y = np.load(targets_path)
-    
-    X_train, X_test, Y_train, Y_test = train_test_split(X, Y, test_size=0.2, random_state=42)
+    # 2. DATA SPLIT (Perfectly aligned arrays)
+    X_train, X_test, Y_train, Y_test = train_test_split(
+        X_data, Y_data, test_size=0.2, random_state=42
+    )
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"-> Computation Device allocated: {device}")
     
-    output_dir = "results/models/pinn"
-    save_path = os.path.join(output_dir, f"pinn_{mode}.joblib")
-    
-    # Configuración dinámica de capas ocultas
+    save_path = os.path.join("results/models/pinn", f"pinn_{mode}.joblib")
     hidden_architecture = [256, 512, 256]
     
-    # Inicializamos la arquitectura corregida
     model = SpectralRecalibrationMLP(
         input_dim=input_dim, 
-        output_dim=300, 
+        output_dim=280, 
         hidden_dims=hidden_architecture, 
-        dropout_rate=0.2
+        dropout_rate=0.0 if is_spectrum else 0.2,
+        residual_type="multiplicative" if is_spectrum else "additive"
     ).to(device)
 
-    # Diccionario contenedor para el mapeo de los escaladores
     scalers_dict = {}
 
-    # CONDITIONAL TRAINING BYPASS
+    # 3. CONDITIONAL TRAINING BYPASS
     if os.path.exists(save_path):
         print(f"[+] Pre-trained model found at: {save_path}")
-        print("-> Loading trained weights and scalers via joblib. Skipping training stage entirely...")
-        
         checkpoint = joblib.load(save_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        model.to(device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        scalers_dict = checkpoint["scalers"]
         
-        # CORRECCIÓN CRÍTICA: Recuperamos los escaladores del archivo para que la evaluación funcione
-        scalers_dict = checkpoint['scalers']
-        
-        # Aplicamos la transformación de test usando los mismos parámetros históricos
-        if mode == "spectrum":
-            X_test_scaled = X_test / scalers_dict['Y_max']
+        if is_spectrum:
+            X_test_spec_scaled = X_test[:, :280] / scalers_dict["Y_max"]
+            X_test_feat_scaled = scalers_dict["scaler_feat"].transform(X_test[:, 280:285])
+            X_test_scaled = np.concatenate([X_test_spec_scaled, X_test_feat_scaled], axis=1)
         else:
-            X_test_scaled = scalers_dict['scaler_X'].transform(X_test)
-                 
+            X_test_scaled = scalers_dict["scaler_X"].transform(X_test)                  
     else:
         print("[-] No pre-trained model found. Proceeding with full training pipeline...")
         
-        # CORRECCIÓN DE ESCALA: Alineación para la física residual-multiplicativa
-        if mode == "spectrum":
-            # Escalamos AMBOS catálogos por el Y_max del set de entrenamiento.
-            # Así, si la red predice un factor de 1.0, el flujo predicho coincide exactamente con Gaia.
-            Y_max = float(np.max(np.abs(Y_train)))
-            X_train_scaled = X_train / Y_max
-            X_test_scaled = X_test / Y_max
-            Y_train_scaled = Y_train / Y_max
-            scalers_dict['Y_max'] = Y_max
+        Y_max = float(np.max(np.abs(Y_train)))
+        Y_train_scaled = Y_train / Y_max
+        scalers_dict["Y_max"] = Y_max
+        
+        # --- HYBRID SCALING LOGIC ---
+        if is_spectrum:
+            # Temporarily isolate dimensions to prevent global division from corrupting parameters
+            X_train_spec, X_train_feat = X_train[:, :280], X_train[:, 280:285]
+            X_test_spec, X_test_feat = X_test[:, :280], X_test[:, 280:285]
+            
+            # Photons: Scale symmetrically by the maximum global flux
+            X_train_spec_scaled = X_train_spec / Y_max
+            X_test_spec_scaled = X_test_spec / Y_max
+            
+            # Stellar parameters: Standardize statistically (mean 0, std 1)
+            scaler_feat = StandardScaler()
+            X_train_feat_scaled = scaler_feat.fit_transform(X_train_feat)
+            X_test_feat_scaled = scaler_feat.transform(X_test_feat)
+            scalers_dict["scaler_feat"] = scaler_feat
+            
+            # Reassemble into 285 fully scaled dimensions
+            X_train_scaled = np.concatenate([X_train_spec_scaled, X_train_feat_scaled], axis=1)
+            X_test_scaled = np.concatenate([X_test_spec_scaled, X_test_feat_scaled], axis=1)
         else:
-            # Para el modo features (parámetros estelares escalamos la X estándar)
             scaler_X = StandardScaler()
             X_train_scaled = scaler_X.fit_transform(X_train)
             X_test_scaled = scaler_X.transform(X_test)
-            scalers_dict['scaler_X'] = scaler_X
-            
-            # El target Y sigue requiriendo escalado global de flujo absoluto
-            Y_max = float(np.max(np.abs(Y_train)))
-            Y_train_scaled = Y_train / Y_max
-            scalers_dict['Y_max'] = Y_max
+            scalers_dict["scaler_X"] = scaler_X
         
-        # Prepare Tensors and DataLoader
-        X_train_t = torch.tensor(X_train_scaled, dtype=torch.float32).to(device)
-        Y_train_t = torch.tensor(Y_train_scaled, dtype=torch.float32).to(device)
+        train_loader = DataLoader(
+            TensorDataset(
+                torch.tensor(X_train_scaled, dtype=torch.float32).to(device), 
+                torch.tensor(Y_train_scaled, dtype=torch.float32).to(device)
+            ), 
+            batch_size=4, shuffle=True
+        )
         
-        train_dataset = TensorDataset(X_train_t, Y_train_t)
-        train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
+        # Physical constraints explicitly configured for the respective modes
+        alpha_val = 0.1 if is_spectrum else 0.1
+        beta_val = 0.0001 if is_spectrum else 0.1
         
-        # Setup physics loss evaluation engine
-        wave_grid = torch.linspace(330.0, 1050.0, 300, device=device)
-        pinn_loss_engine = PhysicsInformedLoss(wavelength_grid=wave_grid)
-        physics_criterion = lambda m, x, y: adaptive_physics_wrapper(m, x, y, pinn_loss_engine)
-        
-        # Execute 2-Stage Adaptive Training (Adam + LBFGS)
-        model = train_2stage_adaptive(
-            model=model,
-            dataloader=train_loader,
-            X_full=X_train_t,
-            Y_full=Y_train_t,
-            physics_criterion=physics_criterion,
-            epochs_adam=500,
-            steps_lbfgs=10
+        pinn_loss_engine = PhysicsInformedLoss(
+            wavelength_grid=torch.linspace(330.0, 1050.0, 280, device=device), 
+            alpha=alpha_val, beta=beta_val, delta=1.0
         )
             
-        # Serialize checkpoint mapping
-        os.makedirs(output_dir, exist_ok=True)
-        state_dict_cpu = {k: v.cpu() for k, v in model.state_dict().items()}
-        
-        checkpoint = {
-            'model_state_dict': state_dict_cpu,
-            'input_dim': input_dim,
-            'hidden_dims': hidden_architecture, # CORREGIDO: Guardamos las dimensiones reales entrenadas
-            'output_dim': 300,
-            'scalers': scalers_dict
-        }
-        
-        joblib.dump(checkpoint, save_path)
-        print(f"    [+] Model & Scalers successfully saved via joblib to: {save_path}")
+        physics_criterion = lambda m, x, y: scaled_physics_wrapper(m, x, y, pinn_loss_engine)
 
-    # EVALUATION LOOP
-    print("\n" + "=" * 60)
+        model = train_2stage_adaptive(
+            model=model, dataloader=train_loader,
+            X_full=train_loader.dataset.tensors[0], Y_full=train_loader.dataset.tensors[1],
+            physics_criterion=physics_criterion, epochs_adam=500, steps_lbfgs=15
+        )
+            
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        joblib.dump({
+            "model_state_dict": {k: v.cpu() for k, v in model.state_dict().items()},
+            "input_dim": input_dim,
+            "hidden_dims": hidden_architecture,
+            "output_dim": 280,
+            "scalers": scalers_dict
+        }, save_path)
+        print(f"    [+] Model & Scalers successfully saved to: {save_path}")
+
+    # 4. EVALUATION LOOP
+    print("\n" + "-" * 60)
     print(">>> Evaluating PINN on Validation Set")
-    print("=" * 60)
+    print("-" * 60)
     
-    X_test_t = torch.tensor(X_test_scaled, dtype=torch.float32).to(device)
     model.eval()
-    
     with torch.no_grad():
-        Y_pred_scaled_t = model(X_test_t)
-        Y_pred_scaled = Y_pred_scaled_t.cpu().numpy()
+        Y_pred_scaled = model(torch.tensor(X_test_scaled, dtype=torch.float32).to(device)).cpu().numpy()
+        Y_pred = Y_pred_scaled * scalers_dict["Y_max"]
         
-        # CORRECCIÓN MAESTRA: Desescalamos multiplicando la predicción de la red por su factor original
-        Y_pred = Y_pred_scaled * scalers_dict['Y_max']
+    if is_spectrum:
+        # Extract only the 280 pure spectrum dimensions to calculate metrics against original Gaia
+        X_test_descaled = X_test_scaled[:, :280] * scalers_dict["Y_max"]
+        print(f"    -> Baseline Gaia MSE (No NN) : {mean_squared_error(Y_test, X_test_descaled):.4e}")
+        print(f"    -> Baseline Gaia R2  (No NN) : {r2_score(Y_test.T, X_test_descaled.T, multioutput='uniform_average'):.4f}")
+        print("    " + "." * 56)
         
-    r2 = r2_score(Y_test, Y_pred)
-    mse = mean_squared_error(Y_test, Y_pred)
-    
-    print(f"    -> Final Mean Squared Error (MSE) : {mse:.4e}")
-    print(f"    -> Final R-squared (R2) Variance  : {r2:.4f}\n")
-    print("=" * 60 + "\n")
-
+    print(f"    -> Final PINN MSE : {mean_squared_error(Y_test, Y_pred):.4e}")
+    print(f"    -> Final PINN R2  : {r2_score(Y_test.T, Y_pred.T, multioutput='uniform_average'):.4f}\n")
 
 if __name__ == "__main__":
-    # Nota técnica: El modo "spectrum" aprovecha la potencia de la arquitectura multiplicativa residual
+    set_seed(42)
+
     train_network(mode="spectrum")
-    print("\n")
-    
     if os.path.exists("data/processed/X_features.npy"):
-        # Nota técnica: Si ejecutas el modo features, recuerda que al no tener espectro base en X,
-        # la red actuará directamente estimando flujos sobre la base normalizada.
         train_network(mode="features")
     else:
-        print("[i] Skipping 'features' mode: 'data/processed/X_features.npy' not found.")
+        print("[i] Skipping 'features' mode: Dataset not found.")

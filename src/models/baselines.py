@@ -24,8 +24,7 @@ def get_baseline_models(random_seed: int = 42) -> dict:
     - random_seed (int): Seed for reproducibility across experiments.
 
     Returns
-    - dict
-        A dictionary containing instantiated, untrained Scikit-Learn models.
+    - dict: A dictionary containing instantiated, untrained Scikit-Learn models.
     """
     models = {
         # Ridge Regression: Evaluates multicollinearity and structural linear mappings
@@ -33,16 +32,16 @@ def get_baseline_models(random_seed: int = 42) -> dict:
         
         # Random Forest: Evaluates non-linear relationships and feature importance
         "Random_Forest": RandomForestRegressor(
-            n_estimators=100, 
-            max_depth=10, 
-            random_state=random_seed,
-            n_jobs=-1  # Use all available CPU cores
+            n_estimators = 100, 
+            max_depth = 10, 
+            random_state = random_seed,
+            n_jobs = -1  # Use all available CPU cores
         ),
         
-        # SVR (RBF Kernel): Projects parameters into higher-dimensional Hilbert spaces
+        # SVR (RBF Kernel): Projects parameters into higher-dimensional spaces
         "SVR": MultiOutputRegressor(
-            SVR(kernel='rbf', C=1.0, epsilon=0.1), 
-            n_jobs=-1) # Concurrently fit independent wavelength models
+            SVR(kernel="rbf", C=1.0, epsilon=0.1), 
+            n_jobs = -1) # Concurrently fit independent wavelength models
     }
     
     return models

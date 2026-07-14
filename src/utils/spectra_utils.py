@@ -1,84 +1,90 @@
 """
-Spectra Utilities for Resolution Degradation and Interpolation.
+Utility functions for CALSPEC spectral processing.
 
-This module provides physical and mathematical tools to process astronomical 
-spectra, including Gaussian convolution for instrument profile simulation 
-and cubic spline interpolation onto a common wavelength grid.
+This module provides helpers to load CALSPEC FITS spectra, degrade spectral
+resolution to mimic Gaia observations, normalize spectra, and simulate Gaia
+BP/RP observations on a common wavelength grid.
 """
 
 import numpy as np
-from scipy.interpolate import CubicSpline
-from typing import Tuple
+from astropy.io import fits
+from scipy.interpolate import interp1d
+from scipy.ndimage import gaussian_filter1d
+from scipy.integrate import trapezoid
 
-def gaussian_kernel_convolution(wavelengths: np.ndarray, flux: np.ndarray, fwhm_nm: float) -> np.ndarray:
-    """
-    Degrade the resolution of a spectrum using a Gaussian kernel convolution.
-    
-    This simulates an instrument's Line Spread Function (LSF).
-    
-    Parameters
-    ----------
-    wavelengths : np.ndarray
-        Array of wavelengths (in nanometers or Angstroms).
-    flux : np.ndarray
-        Array of flux values matching the wavelengths.
-    fwhm_nm : float
-        Full Width at Half Maximum (FWHM) of the target Gaussian kernel 
-        in the same units as wavelengths.
-        
-    Returns
-    -------
-    np.ndarray
-        The convolved (degraded) flux array.
-    """
-    # Calculate standard deviation (sigma) from FWHM
-    sigma = fwhm_nm / (2.0 * np.sqrt(2.0 * np.log(2.0)))
-    convolved_flux = np.zeros_like(flux)
-    
-    # Apply Gaussian kernel smoothing over each wavelength point
-    for i, lambda_core in enumerate(wavelengths):
-        # Weighting factor based on Gaussian distribution
-        weights = np.exp(-0.5 * ((wavelengths - lambda_core) / sigma) ** 2)
-        weights_sum = np.sum(weights)
-        
-        if weights_sum > 0:
-            convolved_flux[i] = np.sum(flux * weights) / weights_sum
-        else:
-            convolved_flux[i] = flux[i]
-            
-    return convolved_flux
 
-def interpolate_to_grid(wavelengths: np.ndarray, flux: np.ndarray, target_grid: np.ndarray) -> np.ndarray:
+def load_calspec_fits(fits_path: str) -> tuple:
     """
-    Interpolate a spectrum onto a standard, uniformly sampled wavelength grid.
+    Reads a raw CALSPEC FITS file and converts units to standard nanometers.
     
-    Uses a Cubic Spline interpolation method to maintain smoothness and preserve
-    spectral features without introducing linear artifacts.
-    
-    Parameters
-    ----------
-    wavelengths : np.ndarray
-        Original non-uniform wavelength array.
-    flux : np.ndarray
-        Original flux values.
-    target_grid : np.ndarray
-        The standardized wavelength grid (Lambda) for the neural network.
+    Parameters:
+    - fits_path (str): Path to the local FITS file.
+    Returns: tuple (wavelength array in nm, flux density array)
+    """
+    with fits.open(fits_path) as hdul:
+        data = hdul[1].data
+        wave_length_angstroms = np.array(data["WAVELENGTH"], dtype=float)
+        flux = np.array(data["FLUX"], dtype=float)
         
-    Returns
-    -------
-    np.ndarray
-        Interpolated flux values on the target_grid.
+        # Convert Angstroms to Nanometers (1 nm = 10 Angstroms)
+        wave_length_nm = wave_length_angstroms / 10.0
+        
+    return wave_length_nm, flux
+
+def degrade_spectral_resolution(wave_nm: np.ndarray, flux: np.ndarray, sigma_nm: float = 8.0) -> tuple:
     """
-    # Ensure sorted order for CubicSpline
-    sort_indices = np.argsort(wavelengths)
-    w_sorted = wavelengths[sort_indices]
-    f_sorted = flux[sort_indices]
+    Downsamples high-resolution spectra to emulated Gaia resolution via LSF (Eq. 1).
     
-    # Initialize and evaluate the Cubic Spline
-    spline = CubicSpline(w_sorted, f_sorted, extrapolate=False)
-    interpolated_flux = spline(target_grid)
+    Parameters:
+    - wave_nm (np.ndarray): Source wavelengths.
+    - flux (np.ndarray): Source flux profile.
+    - sigma_nm (float): Line Spread Function (LSF) smoothing scale.
+    Returns:
+        tuple : (degraded wavelength grid, degraded flux profile)
+    """
     
-    # Handle out-of-bounds values by replacing NaNs with a floor value (0.0)
-    interpolated_flux = np.nan_to_num(interpolated_flux, nan=0.0)
+    fine_grid = np.linspace(wave_nm.min(), wave_nm.max(), len(wave_nm) * 2)
+    interp_func = interp1d(wave_nm, flux, kind='linear', fill_value="extrapolate")
+    fine_flux = interp_func(fine_grid)
     
-    return interpolated_flux
+    pixel_spacing = fine_grid[1] - fine_grid[0]
+    sigma_pixels = sigma_nm / pixel_spacing
+    
+    degraded_fine_flux = gaussian_filter1d(fine_flux, sigma=sigma_pixels)
+    
+    return fine_grid, degraded_fine_flux
+
+def normalize_spectrum(flux_array: np.ndarray, wave_length_grid: np.ndarray) -> np.ndarray:
+    """
+    Normalizes the continuous spectrum using area-under-the-curve (Section 4.5).
+    Parameters:
+    - flux_array (np.ndarray): The flux values to normalize.
+    - wave_length_grid (np.ndarray): The wavelength grid.
+    Returns:
+    - np.ndarray : The normalized flux values.
+    """
+    total_area = trapezoid(flux_array, wave_length_grid)
+    if total_area == 0:
+        return flux_array
+    return flux_array / total_area
+
+def mock_load_gaia_observed_spectrum(calspec_wave: np.ndarray, calspec_flux_degraded: np.ndarray, wave_length_grid: np.ndarray) -> np.ndarray:
+    """
+    A template loader function for Gaia BP/RP observed sampled spectra.
+    Simulates instrumental systematic bias and random noise (Section 5.4).
+    Parameters:
+    - calspec_wave (np.ndarray): The wavelength array from degraded CALSPEC.
+    - calspec_flux_degraded (np.ndarray): The degraded flux array from CALSPEC
+    - wave_length_grid (np.ndarray): The common wavelength grid for alignment.
+    Returns:
+    - observed_gaia_flux (np.ndarray) : Simulated Gaia observed flux array aligned to the common grid.
+    """
+    interp_func = interp1d(calspec_wave, calspec_flux_degraded, kind="cubic", fill_value="extrapolate")
+    clean_sampled_flux = interp_func(wave_length_grid)
+    
+    # Simulating instrumental systematic bias and random noise (Section 5.4)
+    systematic_bias = 1.0 + 0.05 * np.sin(wave_length_grid / 50.0)
+    random_noise = np.random.normal(0, 0.01 * np.mean(clean_sampled_flux), size=wave_length_grid.shape)
+    
+    observed_gaia_flux = (clean_sampled_flux * systematic_bias) + random_noise
+    return observed_gaia_flux

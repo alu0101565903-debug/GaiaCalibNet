@@ -9,8 +9,7 @@ MODULES_TO_IMPORT = [
     "src.models.baselines",
     "src.train.mains.train_baselines",
     "src.train.mains.train_neural_net",
-    "src.experiments.evaluate",
-    "src.utils.spectra_utils",
+    "src.experiments.evaluate_catalog",
 ]
 
 

@@ -111,5 +111,5 @@ def plot_color_magnitude_diagram(input_csv: str, output_image: str):
 
 if __name__ == "__main__":
     input_file = "data/processed/crossmatch_catalog.csv"
-    output_image = "data/cmd_calspec_full_crossmatch.png"
+    output_image = "data/processed/cmd_calspec_full_crossmatch.png"
     plot_color_magnitude_diagram(input_file, output_image)
