@@ -4,80 +4,121 @@ Report Section: 4.1 CALSPEC Data Acquisition
 
 This script downloads the absolute flux-calibrated 1D spectral FITS files 
 from the STScI CALSPEC repository for the targets successfully crossmatched 
-with the Gaia DR3 framework. It retrieves files sequentially and avoids 
-redundant network calls by checking local storage prior to retrieval.
+with the Gaia DR3 framework. It utilizes multithreading for rapid retrieval
+and implements safety checks to prevent corrupt files.
 """
 
 from pathlib import Path
 import pandas as pd
-from urllib.request import urlretrieve
+import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+def download_single_file(fits_file: str, base_url: str, output_dir: Path) -> str:
+    """Download a single CALSPEC FITS file from the remote archive.
+
+    This helper is designed to run in a separate thread. It checks whether the
+    file already exists locally, then streams the remote file to disk with a
+    timeout and a non-zero content guard.
+
+    Args:
+        fits_file (str): Name of the CALSPEC FITS file to retrieve.
+        base_url (str): Remote base URL for the CALSPEC archive.
+        output_dir (Path): Local directory where the file will be saved.
+
+    Returns:
+        str: One of 'exists', 'downloaded', or 'failed'.
+    """
+    local_path = output_dir / fits_file
+
+    # Build the local destination path and check whether the file has already
+    # been successfully downloaded. This avoids repeating downloads on reruns.
+    if local_path.exists() and local_path.stat().st_size > 0:
+        return "exists"
+
+    url = f"{base_url}{fits_file}"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+    try:
+        # Stream the remote file in chunks to avoid loading the entire response
+        # into memory, which is important for large FITS files.
+        response = requests.get(url, headers=headers, stream=True, timeout=20)
+        response.raise_for_status()
+
+        with open(local_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        return "downloaded"
+    except Exception as e:
+        print(f"  [!] Failed downloading asset {fits_file}: {e}")
+        # Remove any partially written file to prevent future false positives.
+        if local_path.exists():
+            local_path.unlink()
+        return "failed"
 
 def download_missing_fits(csv_path: str, output_dir_str: str):
-    """
-    Reads the processed crossmatch catalog and retrieves missing spectral 
-    FITS files from the official STScI server sequentially.
+    """Read the crossmatch catalog and download any missing CALSPEC FITS files.
 
-    Parameters:
-    - csv_path (str): Path to the processed crossmatch CSV catalog containing the target FITS filenames.
-    - output_dir_str (str): Directory path where the downloaded .fits files will be stored.
+    The function verifies that the crossmatch catalog exists, extracts the list
+    of target FITS file names, and downloads missing files in parallel using a
+    thread pool. Existing non-empty files are preserved.
+
+    Args:
+        csv_path (str): Path to the processed crossmatch catalog CSV.
+        output_dir_str (str): Directory where CALSPEC FITS files will be stored.
     """
     print("=" * 60)
     print("[4.1] DOWNLOADING TARGET SPECTRAL FITS FILES FROM STScI")
     print("=" * 60)
 
-    # 1. Path definitions using modern pathlib
     csv_file = Path(csv_path)
     output_dir = Path(output_dir_str)
 
-    # 2. Pre-execution checks
     if not csv_file.exists():
         print(f"[!] Error: Crossmatch catalog not found at {csv_path}")
         print('Please run "crossmatch_wd.py" before executing this download task.')
         return
 
-    # Load the processed data
     df = pd.read_csv(csv_file)
     if "fits_file" not in df.columns:
         print("[!] Error: Column 'fits_file' missing from the crossmatch catalog.")
         return
-    
-    # Isolate unique FITS files to avoid duplicate downloads
+
+    # Remove duplicate file names and ignore missing FITS entries. This ensures
+    # each target file is downloaded at most once.
     required_files = df["fits_file"].dropna().unique()
-    
-    # Ensure the output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Official STScI verified data repository link
+
     base_url = "https://archive.stsci.edu/hlsps/reference-atlases/cdbs/current_calspec/"
-    
+
     print(f"-> Detected {len(required_files)} target stars required by the catalog.")
-    print("-> Initiating sequential download...\n")
+    print("-> Initiating concurrent parallel download...\n")
 
-    # 3. Execution metrics tracker
     stats = {"downloaded": 0, "exists": 0, "failed": 0}
-    
-    # 4. Sequential download loop
-    for fits_file in required_files:
-        fits_file = fits_file.strip()
-        local_path = output_dir / fits_file
-        
-        # Skip download if the file is already stored locally
-        if local_path.exists():
-            stats["exists"] += 1
-            continue
-            
-        # Structure the explicit URL targeting the remote FITS asset
-        url = f"{base_url}{fits_file}"
-        
-        try:
-            print(f"  -> Downloading: {fits_file}...")
-            urlretrieve(url, local_path)
-            stats["downloaded"] += 1
-        except Exception as e:
-            print(f"  [!] Failed downloading asset {fits_file}: {e}")
-            stats["failed"] += 1
 
-    # 5. Final summary reporting
+    # Use a moderate number of worker threads to balance download speed and
+    # polite access to the STScI archive.
+    max_workers = 10
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(download_single_file, f.strip(), base_url, output_dir): f.strip()
+            for f in required_files
+        }
+
+        # Collect results as each download task completes. This uses the
+        # completed futures in real time, so the progress output appears live.
+        for future in as_completed(futures):
+            fits_name = futures[future]
+            try:
+                status = future.result()
+                stats[status] += 1
+                if status == "downloaded":
+                    print(f"  [✓] Successfully downloaded: {fits_name}")
+            except Exception as e:
+                # If a worker thread raises outside the download logic, count it as failed.
+                print(f"  [!] Thread crashed for {fits_name}: {e}")
+                stats["failed"] += 1
+
     print("\n" + "=" * 40)
     print("       DOWNLOAD EXECUTION SUMMARY")
     print("=" * 40)
@@ -88,7 +129,6 @@ def download_missing_fits(csv_path: str, output_dir_str: str):
     print("=" * 60 + "\n")
     
 if __name__ == "__main__":
-    # Path routing aligned with the project's data management architecture
     crossmatch_csv = "data/processed/crossmatch_catalog.csv"
     spectra_output_dir = "data/raw/calspec_fits"
     

@@ -8,6 +8,7 @@ multiplicative physics-inspired residual mapping: instead of predicting absolute
 the network outputs a positive correction vector applied directly to the source Gaia grid.
 """
 
+import math
 import torch
 import torch.nn as nn
 
@@ -18,7 +19,7 @@ class SpectralRecalibrationMLP(nn.Module):
     Architecture (Multiplicative Residual Design):
     - Input: Gaia DR3 observed dataset (either the 300-channel aligned grid vectors 
         or the isolated 5 scalar astrometric/photometric features).
-    - Hidden layers: Dynamically defined by hidden_dims with dropout regularization.
+    - Hidden layers: Dynamically defined by hidden_dims with LayerNorm & dropout regularization.
     - Output: Multiplicative correction vector mapped strictly to positive bounds via Softplus,
         yielding F_pred = F_Gaia * Correction_Factor.
     """
@@ -37,14 +38,17 @@ class SpectralRecalibrationMLP(nn.Module):
         layers = []
         current_dim = input_dim
 
-        # Dynamically build hidden layers following your structural design
+        # Dynamically build hidden layers following the structural design
         for h_dim in hidden_dims:
             layers.append(nn.Linear(current_dim, h_dim))
-            # Opcional: Descomenta la siguiente línea si buscas mayor estabilidad con L-BFGS:
-            layers.append(nn.BatchNorm1d(h_dim))
+            # IMPROVEMENT: Use LayerNorm instead of BatchNorm to preserve stability
+            # of the Hessian during optimization with L-BFGS.
+            layers.append(nn.LayerNorm(h_dim))
             layers.append(activation)
+            
             if dropout_rate > 0:
                 layers.append(nn.Dropout(p=dropout_rate))
+                
             current_dim = h_dim 
 
         # Final linear regression layer to project onto the 300 spectral channels
@@ -52,13 +56,17 @@ class SpectralRecalibrationMLP(nn.Module):
 
         self.net = nn.Sequential(*layers)
         
-        # Enforce that the multiplicative correction factor is strictly positive
+        # Enforce that the multiplicative correction factor (or flux) is strictly positive
         self.positive_activation = nn.Softplus()
+        
+        # IMPROVEMENT: Exact mathematical constant used to remove initialization bias.
+        self.ln_2 = math.log(2.0)
 
     def forward(self, x, gaia_features=None):
         """
-        Performs the multiplicative forward pass of the model.
-        Maps inputs to a correction factor vector and applies it to the original Gaia spectrum.
+        Performs the forward pass of the model.
+        Spectrum Mode: Maps inputs to a correction factor vector and applies it to the original Gaia spectrum.
+        Features Mode: Maps parameters directly to a positive flux space.
         """
         if gaia_features is None:
             inputs = x
@@ -68,23 +76,20 @@ class SpectralRecalibrationMLP(nn.Module):
         # 1. Compute the raw output from the dynamic linear layers
         raw_output = self.net(inputs)
         
-        # 2. BIFURCACIÓN INTELIGENTE DE MODOS
-        # Comparamos la dimensión de la entrada 'x' con la salida 'raw_output'
+        # 2. SMART MODE BRANCHING
         if x.shape[1] == raw_output.shape[1]:
-            # MODO SPECTRUM (300D == 300D)
-            # Map raw outputs to a strictly positive scale (Correction factor centered at 1.0)
-            correction_factor = self.positive_activation(raw_output) - 0.6931 + 1.0
+            # SPECTRUM MODE (300D == 300D)
+            # Map raw outputs to a strictly positive scale (correction factor centered at 1.0)
+            correction_factor = self.positive_activation(raw_output) - self.ln_2 + 1.0
             
             # Apply the multiplicative correction physics: F_pred = F_Gaia * Correction
             f_predicted = x * correction_factor
             return f_predicted
             
         else:
-            # MODO FEATURES (5D != 300D)
-            # Como 'x' son 5 parámetros estelares, no hay un espectro base de 300D para multiplicar.
-            # La red genera y devuelve el flujo directamente.
-            return raw_output
+            # FEATURES MODE (5D != 300D)
+            # IMPROVEMENT: Force the Softplus output so the directly predicted flux
+            # from features is strictly greater than zero.
+            f_predicted_features = self.positive_activation(raw_output)
+            return f_predicted_features
 
-# Compatibility aliases to prevent breakage in legacy scripts that call the class differently
-CalspecFluxMLP = SpectralRecalibrationMLP
-PINN_MLP = SpectralRecalibrationMLP
