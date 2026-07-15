@@ -11,6 +11,7 @@ astronomical name normalization.
 import os
 import re
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 import requests
@@ -24,13 +25,6 @@ def clean_target_name(name: str, prefix: str) -> str:
     """
     Cleans and standardizes raw target strings to maximize coordinate resolution 
     success rates when querying the SIMBAD/Sesame name resolvers.
-
-    Parameters:
-    - name (str): The raw target name extracted directly from the FITS header.
-    - prefix (str): The fallback prefix parsed directly from the asset filename string.
-
-    Returns:
-    - str: A normalized astronomical star identifier string.
     """
     base_name = name.upper() if name else prefix.upper()
 
@@ -49,14 +43,7 @@ def clean_target_name(name: str, prefix: str) -> str:
 
 def get_coords_sesame(star_name: str):
     """
-    Queries the Sesame/SIMBAD gateway using Astropy to resolve SkyCoord coordinates
-    by object identifier when local FITS headers lack spatial reference tags.
-
-    Parameters:
-    - star_name (str): The standardized name of the target stellar system.
-
-    Returns: tuple (Right Ascension, Declination) in decimal degrees rounded to 5 decimals, 
-    or (None, None) if lookup fails.
+    Queries the Sesame/SIMBAD gateway using Astropy to resolve SkyCoord coordinates.
     """
     try:
         coord = SkyCoord.from_name(star_name)
@@ -76,68 +63,97 @@ def is_valid_coord(val) -> bool:
     except ValueError:
         return False
 
+
+def process_single_star(prefix: str, files: list, base_url: str) -> dict:
+    """
+    Worker function to process a single star group. Designed to run in parallel threads.
+    """
+    # Prioritize observational datasets over theoretical model grids ("mod")
+    best_file = sorted(files, key=lambda x: 0 if "mod" not in x.lower() else 1)[0]
+    
+    try:
+        # Stream and pull the remote FITS primary header records
+        header = fits.getheader(base_url + best_file)
+        raw_name = str(header.get("TARGNAME", prefix)).strip()
+        
+        # Extract standard spatial coordinates fields
+        ra = header.get("RA_TARG", header.get("RA"))
+        dec = header.get("DEC_TARG", header.get("DEC"))
+        
+        # Trigger SIMBAD/Sesame resolution loop if header positions are blank or invalid
+        if not is_valid_coord(ra) or not is_valid_coord(dec):
+            cleaned_name = clean_target_name(raw_name, prefix)
+            ra, dec = get_coords_sesame(cleaned_name)
+            
+        if ra is not None and dec is not None:
+            return {
+                "calspec_name": raw_name,
+                "RA": float(ra),
+                "DEC": float(dec),
+                "fits_file": best_file
+            }
+    except Exception:
+        # Silently ignore read/connection errors for this specific file to avoid halting execution
+        pass
+    return None
+
+
 def create_catalog(output_path: str):
     """
     Scrapes the remote index, structures targets, handles observational file prioritization,
     resolves coordinates, and dumps the raw consolidated metadata table.
-
-    Parameters:
-    - output_path (str): Target CSV file path where the generated raw index will be saved.
     """
     print("=" * 60)
     print("[4.1] SCRA-PARSING AND GENERATING BASE CALSPEC CATALOG")
     print("=" * 60)
     
-    # Official archive directory route for remote file streaming
     base_url = "https://archive.stsci.edu/hlsps/reference-atlases/cdbs/current_calspec/"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     
     try:
         print("-> Querying remote STScI directory index page...")
-        req = requests.get(base_url, timeout=15)
-        fits_files = re.findall(r'href="([^"]+\.fits)"', req.text)
+        req = requests.get(base_url, headers=headers, timeout=15)
+        
+        # IMPROVEMENT: Ultra-robust FITS link extraction that supports single/double quotes,
+        # uppercase/lowercase href values, and relative paths.
+        raw_hrefs = re.findall(r'href=["\']([^"\']+)["\']', req.text, re.IGNORECASE)
+        fits_files = [os.path.basename(f) for f in raw_hrefs if f.lower().endswith(".fits")]
+        
     except Exception as e:
         print(f"[!] Critical Connection Error: Unable to access STScI server: {e}")
         return
     
-    # Group file variants matching identical target star roots
+    # Group file variants matching identical target star roots.
     star_files = {}
     for f in fits_files:
-        match = re.search(r"^(.+?)_(mod|stis|nic|stiswfcnic|stiswfc|faint)$", f)
+        # FIXED: Add optional version suffix support (e.g. _003 or _v2) in the filename pattern.
+        match = re.search(r"^(.+?)_(mod|stis|nic|stiswfcnic|stiswfc|faint)(?:_\w+)?\.fits$", f, re.IGNORECASE)
         if match:
             prefix = match.group(1)
             star_files.setdefault(prefix, []).append(f)
             
     star_data = []
-    print(f"-> Found {len(star_files)} distinct target groups. Processing headers...")
+    total_groups = len(star_files)
     
-    for prefix, files in star_files.items():
-        # Optimization heuristic: Prioritize observational datasets over theoretical model grids ("mod")
-        best_file = sorted(files, key=lambda x: 0 if "mod" not in x else 1)[0]
+    if total_groups == 0:
+        print("[!] Warning: Still found 0 target groups. Here is a sample of found FITS files to diagnose:")
+        print(fits_files[:5] if fits_files else "No FITS files extracted from HTML.")
+        return
+
+    print(f"-> Found {total_groups} distinct target groups. Processing headers in parallel...")
+    
+    # Concurrent header processing using ThreadPoolExecutor for network-bound tasks.
+    max_workers = 16
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(process_single_star, prefix, files, base_url): prefix
+            for prefix, files in star_files.items()
+        }
         
-        try:
-            # Stream and pull the remote FITS primary header records via URL connection
-            header = fits.getheader(base_url + best_file)
-            raw_name = header.get("TARGNAME", prefix)
-            
-            # Extract standard spatial coordinates fields
-            ra = header.get("RA_TARG", header.get("RA"))
-            dec = header.get("DEC_TARG", header.get("DEC"))
-            
-            # Trigger SIMBAD/Sesame resolution loop if header positions are blank or invalid
-            if not is_valid_coord(ra) or not is_valid_coord(dec):
-                cleaned_name = clean_target_name(raw_name, prefix)
-                ra, dec = get_coords_sesame(cleaned_name)
-                
-            if ra is not None and dec is not None:
-                star_data.append({
-                    "calspec_name": raw_name,
-                    "RA": float(ra),
-                    "DEC": float(dec),
-                    "fits_file": best_file
-                })
-        except Exception:
-            # Silently skip unreadable headers or transient streaming connection timeouts
-            continue
+        for future in as_completed(futures):
+            result = future.result()
+            if result is not None:
+                star_data.append(result)
 
     if star_data:
         df = pd.DataFrame(star_data).dropna(subset=["RA", "DEC"])
@@ -154,6 +170,5 @@ def create_catalog(output_path: str):
         print("[!] Critical Failure: Could not extract target metadata records from source.")
 
 if __name__ == "__main__":
-    # Standardized paths according to the project layout requirements (Section 3.2)
     raw_catalog_path = "data/raw/calspec_catalog.csv"
     create_catalog(raw_catalog_path)

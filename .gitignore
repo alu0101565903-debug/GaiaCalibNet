@@ -3,7 +3,7 @@ venv/
 .env/
 env/
 
-# Archivos de datos (¡No subas tus datos pesados a GitHub!)
+# Archivos de datos
 data/raw/
 data/processed/
 data/external/
