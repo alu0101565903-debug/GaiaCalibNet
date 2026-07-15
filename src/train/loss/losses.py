@@ -2,113 +2,98 @@
 Module: losses.py
 Report Section: 6.5 Physics-Informed Loss Function (L_flux & L_grad)
 
-This module implements mathematically rigorous Physics-Informed Loss (PIL) criteria 
-for stellar spectrophotometric recalibration. It builds upon a robust Huber baseline 
-by integrating a parameterized Riemann sum for total flux conservation and physical 
-finite differences for local spectral gradient preservation.
+Refactored with C^infinity Log-Cosh loss for L-BFGS stability, 
+Trapezoidal Integration for flux conservation, and 2nd-order Central 
+Differences for spectral gradient matching.
 """
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 class PhysicsInformedLoss(nn.Module):
     """
-    Physics-Informed Loss (PIL) engine for stellar spectra prediction (Section 6.5).
+    Physics-Informed Loss (PIL) engine optimized for L-BFGS second-order optimization.
     
-    Combines a robust Huber Loss baseline with two astrophysical regularizations:
-    - L_flux: Total Integrated Flux Conservation via Relative Riemann Sum.
-    - L_grad: Local Shape/Gradient Preservation via Finite Differences.
+    Combines a smooth Log-Cosh baseline with two astrophysical regularizations:
+    - L_flux: Total Integrated Flux Conservation via Trapezoidal Integration.
+    - L_grad: Local Shape/Gradient Preservation via 2nd-Order Central Differences.
     """
-    def __init__(self, wavelength_grid: torch.Tensor, alpha: float = 0.1, beta: float = 0.1, delta: float = 1.0):
+    def __init__(self, wavelength_grid: torch.Tensor, alpha: float = 0.1, beta: float = 0.1, scale_logcosh: float = 1.0):
         """
         Args:
         - wavelength_grid (torch.Tensor): Homogeneous wavelength vector (Lambda).
-        - alpha (float): Scalar weight factor for flux conservation (L_flux).
-        - beta (float): Scalar weight factor for line gradient preservation (L_grad).
-        - delta (float): Threshold parameter governing the Huber loss transitions.
+        - alpha (float): Weight factor for flux conservation (L_flux).
+        - beta (float): Weight factor for line gradient preservation (L_grad).
+        - scale_logcosh (float): Scaling factor to control the transition to linear loss.
         """
         super().__init__()
         
-        # Register buffers so tensors automatically migrate across devices (CPU/GPU) with the model
         self.register_buffer("wavelength_grid", wavelength_grid.detach().clone())
         self.alpha = alpha
         self.beta = beta
-        self.delta = delta
+        self.scale_logcosh = scale_logcosh
         
-        # Calculate localized Delta Lambda steps (Delta\lambda_i) for precise physical scaling
-        self.register_buffer("delta_lambda", self.wavelength_grid[1:] - self.wavelength_grid[:-1])
+        # Calculate Delta Lambda step (dl is constant for a homogeneous grid)
+        dl = (wavelength_grid[-1] - wavelength_grid[0]) / (len(wavelength_grid) - 1)
+        self.register_buffer("dl", dl)
         
-        # Pad the final interval boundaries to preserve consistent dimensional arrays during integration
-        last_step = self.delta_lambda[-1].unsqueeze(0)
-        self.register_buffer("delta_lambda_padded", torch.cat([self.delta_lambda, last_step]))
+        # 1. TRAPEZOIDAL INTEGRATION WEIGHTS: [0.5 * dl, dl, dl, ..., dl, 0.5 * dl]
+        integration_weights = torch.ones_like(wavelength_grid)
+        integration_weights[0] = 0.5
+        integration_weights[-1] = 0.5
+        integration_weights = integration_weights * dl
+        self.register_buffer("integration_weights", integration_weights)
 
     def compute_decoupled_components(self, y_pred: torch.Tensor, y_true: torch.Tensor):
         """
-        Computes and returns the three physical loss terms in an unweighted state.
-        Essential structure for self-adaptive training weighting strategies.
-
-        Returns:
-            tuple: (loss_huber, loss_flux, loss_grad)
+        Computes the three physical loss terms in an unweighted state.
+        Guarantees C^infinity continuity for all components.
         """
-        # 1. Base Statistical Loss (Huber) - Robust against instrument noise artifacts
-        loss_huber = F.huber_loss(y_pred, y_true, delta=self.delta, reduction="mean")
+        # 1. Log-Cosh Loss: Smooth, robust alternative to Huber for L-BFGS stability
+        diff = y_pred - y_true
+        # Log-cosh formula: log(cosh(x)) = x - log(2) + log(1 + exp(-2x)) for numerical stability
+        # We apply scaling to allow a parameterized transition from MSE to MAE
+        scaled_diff = diff / self.scale_logcosh
+        loss_huber_smooth = torch.mean(
+            self.scale_logcosh * (scaled_diff + torch.nn.functional.softplus(-2.0 * scaled_diff) - torch.log(torch.tensor(2.0)))
+        )
         
-        # 2. Flux Conservation Loss via Normalized Riemann Sum Integration
-        # Multiplicar por delta_lambda_padded calcula el área real bajo la curva (Integral de flujo)
-        integrated_flux_true = torch.sum(y_true * self.delta_lambda_padded.unsqueeze(0), dim=1)
-        integrated_flux_pred = torch.sum(y_pred * self.delta_lambda_padded.unsqueeze(0), dim=1)
+        # 2. Flux Conservation via Trapezoidal Integration
+        # More accurate area approximation than raw Riemann sums
+        integrated_flux_true = torch.sum(y_true * self.integration_weights.unsqueeze(0), dim=1)
+        integrated_flux_pred = torch.sum(y_pred * self.integration_weights.unsqueeze(0), dim=1)
         
-        # Usamos el error cuadrático medio relativo para evitar que estrellas muy brillantes 
-        # dominen por completo la pérdida frente a las estrellas débiles
+        # Relative squared error protects against scaling imbalances between stars
         loss_flux = torch.mean(((integrated_flux_true - integrated_flux_pred) / (integrated_flux_true + 1e-8)) ** 2)
         
-        # 3. Gradient Preservation Loss (Local Line Shapes)
-        # Eliminamos la división explícita por delta_lambda para mantener la estabilidad numérica.
-        # Al ser una malla homogénea constante, la física de las pendientes se conserva de forma idéntica.
-        grad_true = y_true[:, 1:] - y_true[:, :-1]
-        grad_pred = y_pred[:, 1:] - y_pred[:, :-1]
+        # 3. 2nd-Order Central Differences for physical spectral gradient matching
+        # Central diff: (y_{i+1} - y_{i-1}) / 2. We omit division by 2*dl for scale stability,
+        # but the physics of the slopes is fully preserved.
+        grad_true = y_true[:, 2:] - y_true[:, :-2]
+        grad_pred = y_pred[:, 2:] - y_pred[:, :-2]
         loss_grad = torch.mean((grad_true - grad_pred) ** 2)
         
-        return loss_huber, loss_flux, loss_grad
+        return loss_huber_smooth, loss_flux, loss_grad
 
     def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
-        """
-        Standard forward pass returning the single composite scalar loss.
-        Optimized for static hyperparameter training loops.
-        """
-        loss_huber, loss_flux, loss_grad = self.compute_decoupled_components(y_pred, y_true)
-        return loss_huber + (self.alpha * loss_flux) + (self.beta * loss_grad)
+        """Standard forward pass returning composite scalar loss."""
+        loss_base, loss_flux, loss_grad = self.compute_decoupled_components(y_pred, y_true)
+        return loss_base + (self.alpha * loss_flux) + (self.beta * loss_grad)
 
 
-# Functional Wrappers for Training Loop Compatibility
+# --- WRAPPERS FOR ADAPTIVE TRAINING LOOPS ---
 
-# Force the multiplication of alpha and beta BEFORE sending it to the adaptive 
-# loop so L-BFGS sees the smoothed landscape.
 def scaled_physics_wrapper(m, x, y, loss_inst):
     """
-    A wrapper function that computes the decoupled loss components and scales them
-    by their respective alpha and beta weights. This is essential for adaptive training loops
-    where the optimizer needs to see a single scalar loss value.
+    Computes loss components and scales them prior to reduction for L-BFGS visibility.
     """
-    huber, flux, grad = loss_inst.compute_decoupled_components(m(x), y)
-    return huber, flux * loss_inst.alpha, grad * loss_inst.beta
+    base_loss, flux, grad = loss_inst.compute_decoupled_components(m(x), y)
+    return base_loss, flux * loss_inst.alpha, grad * loss_inst.beta
          
 
 def adaptive_physics_wrapper(model, X_batch, Y_batch, loss_instance: PhysicsInformedLoss):
     """
-    Interface wrapper linking the Neural Network forward pass outputs directly 
-    to the decoupled loss component evaluator required by adaptive training loops.
+    Evaluates decoupled raw loss terms for adaptive weight updates.
     """
     Y_pred = model(X_batch)
     return loss_instance.compute_decoupled_components(Y_pred, Y_batch)
-
-
-def compute_mse_loss(y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
-    """Computes standard baseline Mean Squared Error."""
-    return F.mse_loss(y_pred, y_true, reduction="mean")
-
-
-def compute_mae_loss(y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
-    """Computes standard baseline Mean Absolute Error."""
-    return F.l1_loss(y_pred, y_true, reduction="mean")

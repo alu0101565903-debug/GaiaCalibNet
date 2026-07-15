@@ -2,7 +2,8 @@
 Module: train_nn.py
 Report Section: Chapter 7 Training Strategies & PINN Evaluation
 
-This script orchestrates the training of the Physics-Informed Neural Network (PINN).
+Orchestrates the training of the Physics-Informed Neural Network (PINN).
+Original version: Full 300-pixel spectrum without edge trimming.
 """
 
 import random
@@ -38,7 +39,7 @@ def train_network(mode: str = "spectrum"):
     Executes the PINN training and evaluation pipeline.
     
     Args:
-        mode (str): Training mode, either "spectrum" for full 285D data (280D + 5D features), 
+        mode (str): Training mode, either "spectrum" for full 305D data (300D + 5D features), 
                     or "features" for baseline 5D feature training.
     """
     print("\n" + "=" * 60)
@@ -48,13 +49,13 @@ def train_network(mode: str = "spectrum"):
     is_spectrum = (mode == "spectrum")
     targets_path = "data/processed/Y.npy"
     
-    # 1. DATA LOADING AND DIMENSION MERGING
+    # 1. DATA LOADING AND DIMENSION MERGING (Original Full Size)
     if is_spectrum:
-        print("-> Loading both Spectrum (280D) and Features (5D) arrays...")
+        print("-> Loading both Spectrum (300D) and Features (5D) arrays...")
         X_spec = np.load("data/processed/X.npy")
         X_feat = np.load("data/processed/X_features.npy")
-        X_data = np.concatenate([X_spec, X_feat], axis=1)  # Master tensor: 285D
-        input_dim = 285
+        X_data = np.concatenate([X_spec, X_feat], axis=1)  # Master tensor: 305D
+        input_dim = 305
     else:
         X_data = np.load("data/processed/X_features.npy")
         input_dim = 5
@@ -74,10 +75,9 @@ def train_network(mode: str = "spectrum"):
     
     model = SpectralRecalibrationMLP(
         input_dim=input_dim, 
-        output_dim=280, 
+        output_dim=300,  # Original full output size
         hidden_dims=hidden_architecture, 
-        dropout_rate=0.0 if is_spectrum else 0.2,
-        residual_type="multiplicative" if is_spectrum else "additive"
+        dropout_rate=0.0 if is_spectrum else 0.2
     ).to(device)
 
     scalers_dict = {}
@@ -90,8 +90,8 @@ def train_network(mode: str = "spectrum"):
         scalers_dict = checkpoint["scalers"]
         
         if is_spectrum:
-            X_test_spec_scaled = X_test[:, :280] / scalers_dict["Y_max"]
-            X_test_feat_scaled = scalers_dict["scaler_feat"].transform(X_test[:, 280:285])
+            X_test_spec_scaled = X_test[:, :300] / scalers_dict["Y_max"]
+            X_test_feat_scaled = scalers_dict["scaler_feat"].transform(X_test[:, 300:305])
             X_test_scaled = np.concatenate([X_test_spec_scaled, X_test_feat_scaled], axis=1)
         else:
             X_test_scaled = scalers_dict["scaler_X"].transform(X_test)                  
@@ -104,21 +104,17 @@ def train_network(mode: str = "spectrum"):
         
         # --- HYBRID SCALING LOGIC ---
         if is_spectrum:
-            # Temporarily isolate dimensions to prevent global division from corrupting parameters
-            X_train_spec, X_train_feat = X_train[:, :280], X_train[:, 280:285]
-            X_test_spec, X_test_feat = X_test[:, :280], X_test[:, 280:285]
+            X_train_spec, X_train_feat = X_train[:, :300], X_train[:, 300:305]
+            X_test_spec, X_test_feat = X_test[:, :300], X_test[:, 300:305]
             
-            # Photons: Scale symmetrically by the maximum global flux
             X_train_spec_scaled = X_train_spec / Y_max
             X_test_spec_scaled = X_test_spec / Y_max
             
-            # Stellar parameters: Standardize statistically (mean 0, std 1)
             scaler_feat = StandardScaler()
             X_train_feat_scaled = scaler_feat.fit_transform(X_train_feat)
             X_test_feat_scaled = scaler_feat.transform(X_test_feat)
             scalers_dict["scaler_feat"] = scaler_feat
             
-            # Reassemble into 285 fully scaled dimensions
             X_train_scaled = np.concatenate([X_train_spec_scaled, X_train_feat_scaled], axis=1)
             X_test_scaled = np.concatenate([X_test_spec_scaled, X_test_feat_scaled], axis=1)
         else:
@@ -135,20 +131,26 @@ def train_network(mode: str = "spectrum"):
             batch_size=4, shuffle=True
         )
         
-        # Physical constraints explicitly configured for the respective modes
         alpha_val = 0.1 if is_spectrum else 0.1
         beta_val = 0.0001 if is_spectrum else 0.1
         
+        # Original full wavelength grid
+        wave_grid_np = np.linspace(330.0, 1050.0, 300)
+        wave_grid_tensor = torch.tensor(wave_grid_np, dtype=torch.float32, device=device)
+        
         pinn_loss_engine = PhysicsInformedLoss(
-            wavelength_grid=torch.linspace(330.0, 1050.0, 280, device=device), 
-            alpha=alpha_val, beta=beta_val, delta=1.0
+            wavelength_grid=wave_grid_tensor, 
+            alpha=alpha_val, beta=beta_val, scale_logcosh=1.0
         )
             
         physics_criterion = lambda m, x, y: scaled_physics_wrapper(m, x, y, pinn_loss_engine)
 
+        X_full_train = train_loader.dataset.tensors[0]
+        Y_full_train = train_loader.dataset.tensors[1]
+        
         model = train_2stage_adaptive(
             model=model, dataloader=train_loader,
-            X_full=train_loader.dataset.tensors[0], Y_full=train_loader.dataset.tensors[1],
+            X_full=X_full_train, Y_full=Y_full_train,
             physics_criterion=physics_criterion, epochs_adam=500, steps_lbfgs=15
         )
             
@@ -157,7 +159,7 @@ def train_network(mode: str = "spectrum"):
             "model_state_dict": {k: v.cpu() for k, v in model.state_dict().items()},
             "input_dim": input_dim,
             "hidden_dims": hidden_architecture,
-            "output_dim": 280,
+            "output_dim": 300,
             "scalers": scalers_dict
         }, save_path)
         print(f"    [+] Model & Scalers successfully saved to: {save_path}")
@@ -173,8 +175,7 @@ def train_network(mode: str = "spectrum"):
         Y_pred = Y_pred_scaled * scalers_dict["Y_max"]
         
     if is_spectrum:
-        # Extract only the 280 pure spectrum dimensions to calculate metrics against original Gaia
-        X_test_descaled = X_test_scaled[:, :280] * scalers_dict["Y_max"]
+        X_test_descaled = X_test_scaled[:, :300] * scalers_dict["Y_max"]
         print(f"    -> Baseline Gaia MSE (No NN) : {mean_squared_error(Y_test, X_test_descaled):.4e}")
         print(f"    -> Baseline Gaia R2  (No NN) : {r2_score(Y_test.T, X_test_descaled.T, multioutput='uniform_average'):.4f}")
         print("    " + "." * 56)
@@ -184,9 +185,6 @@ def train_network(mode: str = "spectrum"):
 
 if __name__ == "__main__":
     set_seed(42)
-
     train_network(mode="spectrum")
     if os.path.exists("data/processed/X_features.npy"):
         train_network(mode="features")
-    else:
-        print("[i] Skipping 'features' mode: Dataset not found.")

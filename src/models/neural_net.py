@@ -16,15 +16,15 @@ class SpectralRecalibrationMLP(nn.Module):
     Compatible with Adam, L-BFGS, and robust scale-invariant physics constraints.
     """
     def __init__(self, input_dim=300, output_dim=300, hidden_dims=[256, 512, 256], 
-                 activation=nn.GELU(), dropout_rate=0.2, residual_type="additive"):
+                 activation=nn.GELU(), dropout_rate=0.2, residual_type="multiplicative"):
         """
         Args:
-            - input_dim (int): Dimension of the input features (e.g., 285 for 280D spectrum + 5D features).
-            - output_dim (int): Dimension of the output target (e.g., 280 channels).
+            - input_dim (int): Dimension of the input features (e.g., 300 for 300D spectrum).
+            - output_dim (int): Dimension of the output target (e.g., 300 channels).
             - hidden_dims (list): Neurons per hidden layer.
             - activation (nn.Module): Smooth activation function (GELU/Tanh/SiLU).
-            - dropout_rate (float): Dropout probability for Stage 1.
-            - residual_type (str): "additive" for standardized data, "multiplicative" for raw physical flux.
+            - dropout_rate (float): Dropout probability.
+            - residual_type (str): "multiplicative" (default) for physics correction, "additive" for normalized residuals.
         """
         super().__init__()
         self.residual_type = residual_type
@@ -33,10 +33,9 @@ class SpectralRecalibrationMLP(nn.Module):
         layers = []
         current_dim = input_dim
 
-        # Dynamic construction using LayerNorm instead of BatchNorm
+        # Dynamic construction using LayerNorm instead of BatchNorm for L-BFGS stability
         for h_dim in hidden_dims:
             layers.append(nn.Linear(current_dim, h_dim))
-            # LayerNorm is crucial for L-BFGS stability and does not break PINN Autograd
             layers.append(nn.LayerNorm(h_dim))
             layers.append(activation)
             if dropout_rate > 0:
@@ -47,22 +46,21 @@ class SpectralRecalibrationMLP(nn.Module):
         layers.append(nn.Linear(current_dim, output_dim))
         self.net = nn.Sequential(*layers)
         
-        # Positive activation for the strict multiplicative case
-        self.positive_activation = nn.Softplus()
+        # Sigmoid bounds the correction factor strictly between 0.1 and 10.0 
+        # to prevent catastrophic scaling errors while keeping the center at 1.0
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x, gaia_features=None):
         """
         Performs the forward pass. Automatically unpacks high-dimensional inputs 
         into spectrum and features for the residual logic based on output_dim.
         """
-        # We use self.output_dim instead of a hardcoded value (e.g., 300) to
-        # dynamically support different resolutions or truncated data (e.g., 280).
         cutoff = self.output_dim
         
         # --- DYNAMIC UNPACKING LOGIC ---
         if x.shape[1] > cutoff and gaia_features is None:
-            base_x = x[:, :cutoff]  # Isolate the pure spectrum for physics constraints (e.g., first 280)
-            inputs = x              # Full dimensions (e.g., 285) are passed to the network
+            base_x = x[:, :cutoff]  # Isolate the pure spectrum for physics constraints
+            inputs = x              # Full dimensions (285) passed to the network
         elif gaia_features is not None:
             base_x = x
             inputs = torch.cat([x, gaia_features], dim=1)
@@ -75,12 +73,18 @@ class SpectralRecalibrationMLP(nn.Module):
         
         # 2. Operational modes (compare against base_x, NOT against x)
         if base_x.shape[1] == raw_output.shape[1]:
-            # --- SPECTRUM MODE (e.g., 280D == 280D) ---
+            # --- SPECTRUM MODE (300D == 300D) ---
             if self.residual_type == "multiplicative":
-                # Softplus centered at 1.0 for neutral corrections when raw_output is 0.
-                correction_factor = self.positive_activation(raw_output) - 0.6931 + 1.0
+                # USAR UNA DE LAS SIGUIENTES OPCIONES (aseguran corrección = 1.0 en el inicio):
+                # Opción A (Rango 0.1x a 5.0x):
+                correction_factor = 0.1 + 4.9 * self.sigmoid(raw_output - 1.4917)
+                
+                # Opción B (Rango 0.1x a 1.6x - Recomendada si la calibración es fina):
+                # correction_factor = 0.1 + 1.5 * self.sigmoid(raw_output + 0.405)
+                
                 return base_x * correction_factor
             else:
+                # Additive residual
                 return base_x + raw_output
         else:
             # --- FEATURE MODE ---

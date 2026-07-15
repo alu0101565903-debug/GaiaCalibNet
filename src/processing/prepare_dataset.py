@@ -15,6 +15,7 @@ import os
 import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d
+from scipy.integrate import trapezoid
 
 from src.processing.download_gaia import load_real_gaia_spectrum
 from src.utils.spectra_utils import load_calspec_fits, degrade_spectral_resolution, normalize_spectrum
@@ -115,12 +116,26 @@ def build_and_save_dataset(csv_metadata_path: str, calspec_dir: str, output_dir:
 
             
             # 5. Apply continuous normalization scaling (Section 4.5)
-            x_normalized = normalize_spectrum(x_flux_raw, wave_length_grid)
-            y_normalized = normalize_spectrum(y_flux_aligned, wave_length_grid)
+            area_gaia = trapezoid(x_flux_raw, wave_length_grid)
             
+            if area_gaia == 0:
+                print(f"  [>>] Skipping {star_name} due to zero integrated area in Gaia spectrum.")
+                continue
+
+            # Escalamos AMBOS espectros por la misma constante de Gaia
+            x_normalized = x_flux_raw / area_gaia
+            y_normalized = y_flux_aligned / area_gaia
+
             X_list.append(x_normalized)
             Y_list.append(y_normalized)
             processed_stars.append(star_name)
+
+            #x_normalized = normalize_spectrum(x_flux_raw, wave_length_grid)
+            #y_normalized = normalize_spectrum(y_flux_aligned, wave_length_grid)
+            
+            #X_list.append(x_normalized)
+            #Y_list.append(y_normalized)
+            #processed_stars.append(star_name)
             print(f"  [✓] Successfully processed: {star_name} -> {matched_filename}")
             
         except Exception as e:
@@ -158,6 +173,6 @@ if __name__ == "__main__":
     processed_data_dir = "data/processed/"
 
     # Define globally the homogeneous wavelength grid (Lambda) in nanometers (Section 5.3)
-    wave_length_grid = np.linspace(330.0, 1050.0, 300)[:280]
+    wave_length_grid = np.linspace(330.0, 1050.0, 300)
     
     build_and_save_dataset(csv_path, calspec_dir, processed_data_dir, wave_length_grid)
