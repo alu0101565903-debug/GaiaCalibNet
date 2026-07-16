@@ -24,3 +24,4 @@ results/
 *.pt
 .pytest_cache/
 *.log
+.png

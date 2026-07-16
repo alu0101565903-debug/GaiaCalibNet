@@ -2,9 +2,18 @@
 Module: adp_training_strategies.py
 Report Section: Chapter 7 Training Strategies & Hyperparameter Optimization
 
-This module implements the robust 2-Stage Adaptive Training. It utilizes 
-Self-Adaptive Weights equipped with log-barrier penalties to dynamically balance 
-the competing gradients of data regression, flux conservation, and gradient preservation.
+This module provides the 2-stage adaptive training strategy used by the PINN
+pipeline. It first trains the model with Adam while learning task-specific
+uncertainty weights, then refines the solution with a deterministic L-BFGS
+optimizer.
+
+The adaptive scheme dynamically balances the competing gradients of:
+- data regression,
+- flux conservation,
+- shape/gradient preservation.
+
+This design enables robust convergence for physics-informed spectral
+recalibration models.
 """
 
 import torch
@@ -13,19 +22,20 @@ from tqdm import tqdm
 
 def train_adam_adaptive(model, epochs, dataloader, physics_criterion, lr=0.001):
     """
-    Stage 1: Adaptive training using Adam optimizer with stable log-barrier penalties.
-    Dynamically balances the Data, Flux, and Gradient loss components.
+    Stage 1: Adaptive training using Adam optimizer with mathematically rigorous
+    homoscedastic uncertainty weighting (exp(-s) * L + s).
     """
     device = next(model.parameters()).device
     
-    # 1. Initialize adaptive weights for Data (Huber), Flux Conservation, and Gradient
-    log_w_data = nn.Parameter(torch.tensor(0.0, device=device))
-    log_w_flux = nn.Parameter(torch.tensor(0.0, device=device))
-    log_w_grad = nn.Parameter(torch.tensor(0.0, device=device))
-    log_weights = [log_w_data, log_w_flux, log_w_grad]
+    # 1. Initialize adaptive log-variance parameters (s = log(sigma^2))
+    # Starting at 0.0 means initial weight exp(-0) = 1.0
+    log_var_data = nn.Parameter(torch.tensor(0.0, device=device))
+    log_var_flux = nn.Parameter(torch.tensor(0.0, device=device))
+    log_var_grad = nn.Parameter(torch.tensor(0.0, device=device))
+    log_vars = [log_var_data, log_var_flux, log_var_grad]
 
     # Combine model parameters and the dynamically learned weights in the optimizer
-    optimizer = torch.optim.Adam(list(model.parameters()) + log_weights, lr=lr)
+    optimizer = torch.optim.Adam(list(model.parameters()) + log_vars, lr=lr)
     
     model.train()
     pbar = tqdm(range(epochs), desc=">>> Stage 1: Adaptive Adam", unit="epoch")
@@ -33,35 +43,44 @@ def train_adam_adaptive(model, epochs, dataloader, physics_criterion, lr=0.001):
     for epoch in pbar:
         epoch_loss = 0.0
         
-        for X_batch, Y_batch in dataloader:
-            X_batch, Y_batch = X_batch.to(device), Y_batch.to(device)
+        for batch in dataloader:
+            # Support optional noise variance tensors when the dataloader provides them.
+            if len(batch) == 3:
+                X_batch, Y_batch, Sigma_batch = [b.to(device) for b in batch]
+            else:
+                X_batch, Y_batch = batch[0].to(device), batch[1].to(device)
+                Sigma_batch = None
+
             optimizer.zero_grad()
 
-            # --- A. Clamp weights prior to exponential (Critical for numerical stability) ---
+            # --- A. Clamp log-variances to ensure numerical stability ---
             with torch.no_grad():
-                for lw in log_weights:
-                    lw.clamp_(-5.0, 5.0)
+                for lv in log_vars:
+                    lv.clamp_(-5.0, 5.0)
 
-            # Transform log weights to positive scalar coefficients
-            w_data, w_flux, w_grad = torch.exp(log_w_data), torch.exp(log_w_flux), torch.exp(log_w_grad)
-            
             # --- B. Compute physical loss components ---
-            loss_data, loss_flux, loss_grad = physics_criterion(model, X_batch, Y_batch)
+            loss_data, loss_flux, loss_grad = physics_criterion(model, X_batch, Y_batch, Sigma_batch)
 
-            # CORRECCIÓN CRÍTICA: Añadimos el castigo logarítmico para evitar que los pesos colapsen a 0
-            penalty = log_w_data + log_w_flux + log_w_grad
-            total_loss = (w_data * loss_data) + (w_flux * loss_flux) + (w_grad * loss_grad) - penalty
+            # --- C. Rigorous Multi-Task Uncertainty Formulation (Kendall et al.) ---
+            # w = exp(-s), penalty = s
+            w_data = torch.exp(-log_var_data)
+            w_flux = torch.exp(-log_var_flux)
+            w_grad = torch.exp(-log_var_grad)
             
-            # --- C. Safety validation to prevent exploding gradients ---
+            total_loss = (w_data * loss_data + log_var_data) + \
+                         (w_flux * loss_flux + log_var_flux) + \
+                         (w_grad * loss_grad + log_var_grad)
+            
+            # --- D. Safety validation ---
             if torch.isnan(total_loss):
                 tqdm.write(f" [!] NaN detected at epoch {epoch}. Skipping batch step.")
                 continue
 
             total_loss.backward()
             
-            # --- D. Dual Gradient Clipping ---
+            # --- E. Dual Gradient Clipping ---
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            torch.nn.utils.clip_grad_norm_(log_weights, max_norm=0.1) 
+            torch.nn.utils.clip_grad_norm_(log_vars, max_norm=0.1) 
             
             optimizer.step()
             epoch_loss += total_loss.item()
@@ -75,59 +94,64 @@ def train_adam_adaptive(model, epochs, dataloader, physics_criterion, lr=0.001):
                 "W_Grad": f"{w_grad.item():.2f}"
             })
 
-    return model, log_weights
+    return model, log_vars
 
 
-def train_lbfgs_adaptive(model, X_full, Y_full, log_weights, physics_criterion, steps=10):
+def train_lbfgs_adaptive(model, X_full, Y_full, log_vars, physics_criterion, Sigma_full=None, steps=10):
     """
     Stage 2: Refinement stage using L-BFGS optimizer for high-precision convergence.
     """
     device = next(model.parameters()).device
     X_full, Y_full = X_full.to(device), Y_full.to(device)
+    if Sigma_full is not None:
+        Sigma_full = Sigma_full.to(device)
     
     optimizer = torch.optim.LBFGS(
-        list(model.parameters()) + log_weights, 
+        list(model.parameters()) + log_vars, 
         lr=0.1, max_iter=20, history_size=10, line_search_fn="strong_wolfe"
     )
 
-    max_iter_per_step = 20
-    pbar = tqdm(total=steps * max_iter_per_step, desc=">>> Stage 2: L-BFGS Refinement", unit="it")
+    pbar = tqdm(total=steps, desc=">>> Stage 2: L-BFGS Refinement", unit="step")
+    
+    # Critical improvement: disable stochastic behavior (Dropout) so that
+    # the deterministic L-BFGS optimizer can compute consistent Hessians.
+    model.prepare_for_lbfgs()
     
     def closure():
-        # --- E. Enforce strict clamp inside closure ---
         with torch.no_grad():
-            for lw in log_weights:
-                lw.clamp_(-5.0, 5.0)
+            for lv in log_vars:
+                lv.clamp_(-5.0, 5.0)
         
         optimizer.zero_grad()
         
-        loss_data, loss_flux, loss_grad = physics_criterion(model, X_full, Y_full)
+        loss_data, loss_flux, loss_grad = physics_criterion(model, X_full, Y_full, Sigma_full)
 
-        w_data, w_flux, w_grad = torch.exp(log_weights[0]), torch.exp(log_weights[1]), torch.exp(log_weights[2])
+        # Use the same uncertainty-weighted multi-task formulation as in Adam.
+        w_data = torch.exp(-log_vars[0])
+        w_flux = torch.exp(-log_vars[1])
+        w_grad = torch.exp(-log_vars[2])
         
-        # CORRECCIÓN CRÍTICA: Mantenemos el castigo logarítmico también en la optimización de segundo orden
-        penalty = log_weights[0] + log_weights[1] + log_weights[2]
-        total_loss = (w_data * loss_data) + (w_flux * loss_flux) + (w_grad * loss_grad) - penalty
+        total_loss = (w_data * loss_data + log_vars[0]) + \
+                     (w_flux * loss_flux + log_vars[1]) + \
+                     (w_grad * loss_grad + log_vars[2])
         
         if total_loss.requires_grad:
             total_loss.backward()
-        
-        pbar.update(1)
-        pbar.set_postfix({
-            "Loss": f"{total_loss.item():.4e}",
-            "Weights": f"({w_data.item():.1f}, {w_flux.item():.1f}, {w_grad.item():.1f})"
-        })
+            
         return total_loss
     
-    model.train()
     for _ in range(steps):
-        optimizer.step(closure)
+        # L-BFGS may invoke closure() multiple times within a single optimizer
+        # step. Update the progress bar once per completed optimization step.
+        loss_val = optimizer.step(closure)
+        pbar.update(1)
+        pbar.set_postfix({"Loss": f"{loss_val.item():.4e}"})
 
     pbar.close()    
     return model
 
 
-def train_2stage_adaptive(model, dataloader, X_full, Y_full, physics_criterion, epochs_adam=1000, steps_lbfgs=10):
+def train_2stage_adaptive(model, dataloader, X_full, Y_full, physics_criterion, Sigma_full=None, epochs_adam=1000, steps_lbfgs=10):
     """
     Executes the complete 2-stage adaptive training pipeline.
     """
@@ -148,8 +172,9 @@ def train_2stage_adaptive(model, dataloader, X_full, Y_full, physics_criterion, 
         model, 
         X_full=X_full, 
         Y_full=Y_full, 
-        log_weights=log_params, 
-        physics_criterion=physics_criterion, 
+        log_vars=log_params, 
+        physics_criterion=physics_criterion,
+        Sigma_full=Sigma_full,
         steps=steps_lbfgs
     )
     
