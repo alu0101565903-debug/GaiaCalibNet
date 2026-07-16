@@ -143,7 +143,7 @@ def generate_comparative_plots(indices="all", max_plots=None):
         plot_list = plot_list[:max_plots]
 
     print(f"\n-> Generating {len(plot_list)} comparative plot(s)...")
-    os.makedirs("results/plots", exist_ok=True)
+    os.makedirs("results/plots/models_performance_comparison", exist_ok=True)
 
     # Build a physical wavelength axis for plotting. The values here are in nm.
     wavelengths = np.linspace(330, 1050, 300)
@@ -196,12 +196,12 @@ def generate_comparative_plots(indices="all", max_plots=None):
         ax2.set_ylim(-40, 40) 
         ax2.grid(True, alpha=0.3)
 
-        save_path = f"results/plots/spectrum_comparison_idx{star_index}.png"
+        save_path = f"results/plots/models_performance_comparison/spectrum_comparison_idx{star_index}.png"
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close(fig)  # Free memory by closing the figure
         
     # Summary message after all requested plots have been written to disk.
-    print(f"[*] All requested plots ({len(plot_list)}) successfully saved in results/plots/.")
+    print(f"[*] All requested plots ({len(plot_list)}) successfully saved in results/plots/models_performance_comparison/.")
 
 if __name__ == "__main__":
     # USAGE EXAMPLES:
