@@ -9,6 +9,7 @@ justified for resolving Gaia DR3 instrumental systematic errors.
 """
 
 import numpy as np
+from sklearn.dummy import DummyRegressor
 from sklearn.linear_model import RidgeCV
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.multioutput import MultiOutputRegressor
@@ -29,30 +30,37 @@ def get_baseline_models(random_seed: int = 42) -> dict:
         A dictionary containing instantiated, untrained Scikit-Learn models.
     """
     
-    # Rango de regularización L2 (alphas) a explorar analíticamente (de 10^-3 a 10^3)
+    # L2 regularization grid to search (10^-3 .. 10^3) for RidgeCV.
     alphas_to_search = np.logspace(-3, 3, 13)
-    
+
     models = {
-        # RidgeCV: Resuelve la matriz (X^T X + alpha I)^-1 X^T Y
-        # Evalúa automáticamente el mejor 'alpha' mediante validación cruzada interna (LOOCV).
+        # Dummy Regressor: a zero-skill baseline that always predicts the mean
+        # spectrum. Useful to confirm that any positive R^2 from other models
+        # corresponds to learned physical signal rather than data bias.
+        "Zero_Skill_Mean": DummyRegressor(strategy="mean"),
+
+        # RidgeCV: L2-regularized linear model. Automatically selects the best
+        # "alpha" from "alphas_to_search" using internal cross-validation.
         "Ridge_Regression": RidgeCV(
-            alphas=alphas_to_search, 
-            store_cv_values=False
+            alphas=alphas_to_search
         ),
-        
-        # Random Forest: Evalúa relaciones no lineales y es robusto al sobreajuste
+
+        # Random Forest: non-linear ensemble baseline; captures interactions
+        # and tends to be robust to overfitting when tuned conservatively.
         "Random_Forest": RandomForestRegressor(
-            n_estimators=100, 
-            max_depth=10, 
+            n_estimators=100,
+            max_depth=10,
             random_state=random_seed,
-            n_jobs=-1  # Utiliza todos los hilos físicos del procesador
+            n_jobs=-1,  # use all available CPU cores
         ),
-        
-        # SVR (RBF Kernel): Proyecta parámetros en espacios de Hilbert de dimensión infinita
+
+        # Support Vector Regressor (RBF kernel) wrapped for multi-output.
+        # SVR is a strong non-linear baseline; the wrapper enables predicting
+        # the full spectrum (multi-channel) by fitting one estimator per target.
         "SVR": MultiOutputRegressor(
-            SVR(kernel='rbf', C=10.0, epsilon=0.01), # Ligero ajuste heurístico para flujos estelares
-            n_jobs=-1
-        ) 
+            SVR(kernel="rbf", C=10.0, epsilon=0.01),
+            n_jobs=-1,
+        ),
     }
     
     return models

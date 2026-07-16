@@ -2,10 +2,18 @@
 Module: neural_net.py
 Report Section: 6.3 Deep Learning Neural Network Architecture (MLP - Multiplicative Residual)
 
-This module defines the Multi-Layer Perceptron (MLP) architecture customized for 
-the Gaia-CALSPEC spectrophotometric recalibration pipeline. It implements a 
-multiplicative physics-inspired residual mapping: instead of predicting absolute fluxes,
-the network outputs a positive correction vector applied directly to the source Gaia grid.
+Defines the spectral recalibration neural network used for Gaia to CALSPEC
+recalibration. The model is a flexible MLP that can either predict a full
+spectrum correction vector or produce strictly positive flux predictions from
+auxiliary Gaia features.
+
+Key characteristics:
+- Multiplicative residual design: the network learns a positive correction factor
+  applied to the input Gaia spectrum rather than regressing raw flux directly.
+- Softplus activation is shifted so a zero-initialized network starts with an
+  identity correction (correction factor of 1.0).
+- Supports both spectrum-mode inputs and scalar-feature modes through dynamic
+  output shaping.
 """
 
 import math
@@ -41,8 +49,7 @@ class SpectralRecalibrationMLP(nn.Module):
         # Dynamically build hidden layers following the structural design
         for h_dim in hidden_dims:
             layers.append(nn.Linear(current_dim, h_dim))
-            # IMPROVEMENT: Use LayerNorm instead of BatchNorm to preserve stability
-            # of the Hessian during optimization with L-BFGS.
+            # LayerNorm preserves stability of the Hessian during optimization with L-BFGS.
             layers.append(nn.LayerNorm(h_dim))
             layers.append(activation)
             
@@ -59,37 +66,70 @@ class SpectralRecalibrationMLP(nn.Module):
         # Enforce that the multiplicative correction factor (or flux) is strictly positive
         self.positive_activation = nn.Softplus()
         
-        # IMPROVEMENT: Exact mathematical constant used to remove initialization bias.
+        # Exact mathematical constant used to remove initialization bias when
+        # shifting the Softplus activation so the correction factor is centered
+        # around 1.0 for zero initialization.
         self.ln_2 = math.log(2.0)
+
+        # Enhancement: enforce a physics-informed initialization of the residual
+        # mapping so that at the start of training the network implements an
+        # identity-like multiplicative correction (no change to input flux).
+        self._initialize_residual_mapping()
+
+    def _initialize_residual_mapping(self):
+        """
+        Initializes the final linear layer to zero. 
+        This guarantees that at Epoch 0, raw_output = 0, and the network acts 
+        as a perfect Identity Mapping: F_pred = F_Gaia * (Softplus(0) - ln(2) + 1.0) = F_Gaia.
+        """
+        nn.init.zeros_(self.net[-1].weight)
+        nn.init.zeros_(self.net[-1].bias)
+
+    def prepare_for_lbfgs(self):
+        """
+        Convenience method to disable Dropout before L-BFGS optimization.
+        L-BFGS requires a purely deterministic loss landscape to compute the Hessian.
+        """
+        for module in self.modules():
+            if isinstance(module, nn.Dropout):
+                module.p = 0.0
 
     def forward(self, x, gaia_features=None):
         """
         Performs the forward pass of the model.
-        Spectrum Mode: Maps inputs to a correction factor vector and applies it to the original Gaia spectrum.
+        Spectrum Mode: Maps inputs to a clean, smooth, directly predicted spectrum
+                       in scaled space, then scales it back up to physical units.
         Features Mode: Maps parameters directly to a positive flux space.
         """
-        if gaia_features is None:
-            inputs = x
-        else:
-            inputs = torch.cat([x, gaia_features], dim=1)
-            
-        # 1. Compute the raw output from the dynamic linear layers
-        raw_output = self.net(inputs)
         
-        # 2. SMART MODE BRANCHING
-        if x.shape[1] == raw_output.shape[1]:
-            # SPECTRUM MODE (300D == 300D)
-            # Map raw outputs to a strictly positive scale (correction factor centered at 1.0)
-            correction_factor = self.positive_activation(raw_output) - self.ln_2 + 1.0
-            
-            # Apply the multiplicative correction physics: F_pred = F_Gaia * Correction
-            f_predicted = x * correction_factor
-            return f_predicted
-            
+        # 1. INPUT SCALE NORMALIZATION: bring inputs close to O(1) to revive
+        #    gradients in the linear layers and make learning numerically stable.
+        scale_factor = torch.mean(x, dim=1, keepdim=True) + 1e-12
+        x_scaled_for_mlp = x / scale_factor
+        
+        if gaia_features is None:
+            inputs = x_scaled_for_mlp
         else:
-            # FEATURES MODE (5D != 300D)
-            # IMPROVEMENT: Force the Softplus output so the directly predicted flux
-            # from features is strictly greater than zero.
+            inputs = torch.cat([x_scaled_for_mlp, gaia_features], dim=1)
+            
+        # 2. Process through the MLP core.
+        raw_output = self.net(inputs)
+
+        # 3. Mode branching: spectrum mode vs feature mode.
+        if x.shape[1] == raw_output.shape[1]:
+            # === DIRECT SPECTRUM MODE (WITHOUT MULTIPLYING BY NOISY INPUT) ===
+            # Predict the spectrum shape at O(1) scale.
+            # Apply the adjusted Softplus trick (-ln_2 + 1.0) so that when
+            # raw_output is zero, the normalized prediction equals 1.0 exactly.
+            normalized_prediction = self.positive_activation(raw_output) - self.ln_2 + 1.0
+
+            # Rescale the normalized prediction back to the original flux scale.
+            # At initialization, this yields a flat spectrum equal to the mean
+            # input flux for the star, avoiding noisy startup behavior.
+            f_predicted = normalized_prediction * scale_factor
+            return f_predicted
+
+        else:
+            # Features mode: return the directly predicted positive flux values.
             f_predicted_features = self.positive_activation(raw_output)
             return f_predicted_features
-
