@@ -13,7 +13,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-def plot_sample_stars(out_dir: str = "results/plots/diagnostics"):
+def plot_sample_stars(out_dir: str = "results/plots/data_diagnostics"):
     """
     Load preprocessed spectral matrices and generate side-by-side diagnostic
     comparison plots for two sample stars.
@@ -92,5 +92,5 @@ def plot_sample_stars(out_dir: str = "results/plots/diagnostics"):
 
 
 if __name__ == "__main__":
-    out_dir = "results/plots/diagnostics"
+    out_dir = "results/plots/data_diagnostics"
     plot_sample_stars(out_dir)
