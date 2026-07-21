@@ -68,9 +68,16 @@ def process_single_star(prefix: str, files: list, base_url: str) -> dict:
     """
     Worker function to process a single star group. Designed to run in parallel threads.
     """
-    # Prioritize observational datasets over theoretical model grids ("mod")
-    best_file = sorted(files, key=lambda x: 0 if "mod" not in x.lower() else 1)[0]
+    # Exclude any FITS files that are theoretical models (contain "mod" in their name)
+    valid_files = [f for f in files if "mod" not in f.lower()]
     
+    # If all files are models, we omit this star
+    if not valid_files:
+        return None
+        
+    # Select the observational FITS file
+    best_file = sorted(valid_files)[0]
+
     try:
         # Stream and pull the remote FITS primary header records
         header = fits.getheader(base_url + best_file)
