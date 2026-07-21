@@ -9,9 +9,11 @@ auxiliary Gaia features.
 
 Key characteristics:
 - Multiplicative residual design: the network learns a positive correction factor
-  applied to the input Gaia spectrum rather than regressing raw flux directly.
+  applied to the smoothed input Gaia spectrum to avoid propagating high-frequency noise.
 - Softplus activation is shifted so a zero-initialized network starts with an
   identity correction (correction factor of 1.0).
+- Custom 1D smoothing with replicate padding ensures physical spectral continuity
+  without boundary drop-off artifacts.
 - Supports both spectrum-mode inputs and scalar-feature modes through dynamic
   output shaping.
 """
@@ -19,6 +21,7 @@ Key characteristics:
 import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 class SpectralRecalibrationMLP(nn.Module):
     """
@@ -29,10 +32,10 @@ class SpectralRecalibrationMLP(nn.Module):
         or the isolated 5 scalar astrometric/photometric features).
     - Hidden layers: Dynamically defined by hidden_dims with LayerNorm & dropout regularization.
     - Output: Multiplicative correction vector mapped strictly to positive bounds via Softplus,
-        yielding F_pred = F_Gaia * Correction_Factor.
+        yielding F_pred = F_Gaia_smoothed * Correction_Factor_smoothed.
     """
     def __init__(self, input_dim=300, output_dim=300, hidden_dims=[256, 512, 256], 
-                 activation=nn.GELU(), dropout_rate=0.2):
+                 activation=nn.GELU(), dropout_rate=0.2, kernel_size=25):
         """
         Args:
         - input_dim (int): Dimension of the input features (default: 300 for aligned grids).
@@ -40,8 +43,13 @@ class SpectralRecalibrationMLP(nn.Module):
         - hidden_dims (list): List containing the number of neurons per hidden layer.
         - activation (nn.Module): Instantiated PyTorch activation function.
         - dropout_rate (float): Dropout probability to handle variance in compact catalogs.
+        - kernel_size (int): Kernel size for 1D smoothing filter to enforce spectral continuity.
         """
         super().__init__()
+        
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.kernel_size = kernel_size
 
         layers = []
         current_dim = input_dim
@@ -80,7 +88,8 @@ class SpectralRecalibrationMLP(nn.Module):
         """
         Initializes the final linear layer to zero. 
         This guarantees that at Epoch 0, raw_output = 0, and the network acts 
-        as a perfect Identity Mapping: F_pred = F_Gaia * (Softplus(0) - ln(2) + 1.0) = F_Gaia.
+        as a perfect Identity Mapping: 
+        F_pred = F_Gaia_smoothed * (Softplus(0) - ln(2) + 1.0) = F_Gaia_smoothed.
         """
         nn.init.zeros_(self.net[-1].weight)
         nn.init.zeros_(self.net[-1].bias)
@@ -94,11 +103,35 @@ class SpectralRecalibrationMLP(nn.Module):
             if isinstance(module, nn.Dropout):
                 module.p = 0.0
 
+    def _smooth_tensor(self, t):
+        """
+        Applies a 1D average pooling smoothing filter while preventing boundary
+        drop-off artifacts by using "replicate" padding instead of zero-padding.
+        
+        Args:
+        - t (torch.Tensor): 2D tensor of shape (batch_size, channels).
+        
+        Returns:
+        - torch.Tensor: Smoothed 2D tensor of the same shape.
+        """
+        # Reshape tensor to 3D format for 1D pooling: (Batch, Channels=1, Length)
+        t_3d = t.unsqueeze(1)
+        pad_size = self.kernel_size // 2
+        
+        # Pad with edge replication to maintain physical values at the boundaries
+        t_padded = F.pad(t_3d, (pad_size, pad_size), mode="replicate")
+        
+        # Apply average pooling (CRITICAL: stride=1 maintains the 300 channels)
+        t_smoothed = F.avg_pool1d(t_padded, kernel_size=self.kernel_size, stride=1)
+        
+        # Return to 2D shape: (Batch, Length)
+        return t_smoothed.squeeze(1)
+
     def forward(self, x, gaia_features=None):
         """
         Performs the forward pass of the model.
-        Spectrum Mode: Maps inputs to a clean, smooth, directly predicted spectrum
-                       in scaled space, then scales it back up to physical units.
+        Spectrum Mode: Isolates the stellar continuum and applies a learned, smoothed 
+                       multiplicative correction to reconstruct the physical flux.
         Features Mode: Maps parameters directly to a positive flux space.
         """
         
@@ -117,16 +150,21 @@ class SpectralRecalibrationMLP(nn.Module):
 
         # 3. Mode branching: spectrum mode vs feature mode.
         if x.shape[1] == raw_output.shape[1]:
-            # === DIRECT SPECTRUM MODE (WITHOUT MULTIPLYING BY NOISY INPUT) ===
-            # Predict the spectrum shape at O(1) scale.
+            # === TRUE RESIDUAL SPECTRUM MODE ===
+            
+            # Predict the unconstrained correction factor.
             # Apply the adjusted Softplus trick (-ln_2 + 1.0) so that when
-            # raw_output is zero, the normalized prediction equals 1.0 exactly.
-            normalized_prediction = self.positive_activation(raw_output) - self.ln_2 + 1.0
+            # raw_output is zero, the normalized correction equals 1.0 exactly.
+            correction_factor = self.positive_activation(raw_output) - self.ln_2 + 1.0
 
-            # Rescale the normalized prediction back to the original flux scale.
-            # At initialization, this yields a flat spectrum equal to the mean
-            # input flux for the star, avoiding noisy startup behavior.
-            f_predicted = normalized_prediction * scale_factor
+            # Smooth the correction factor to enforce instrumental response continuity
+            c_smoothed = self._smooth_tensor(correction_factor)
+            
+            # Smooth the input spectrum to isolate the stellar continuum (Denoising)
+            x_smoothed = self._smooth_tensor(x)
+
+            # True multiplicative residual combination: Continuum * Correction
+            f_predicted = c_smoothed * x_smoothed
             return f_predicted
 
         else:

@@ -1,5 +1,5 @@
 """
-Module: crossmatch_wd.py
+Module: crossmatch.py
 Report Section: 4.2 Gaia Data Retrieval & 4.3 Catalog Cross-matching
 
 This script automates querying the Gaia DR3 database using coordinates from the
@@ -104,6 +104,7 @@ def run_crossmatch(input_csv: str, output_csv: str, max_separation_arcsec: float
         )
         AND has_xp_continuous = 'True'
         AND ruwe < 1.4
+        AND phot_g_mean_mag > 3.0
         """
         
         try:
