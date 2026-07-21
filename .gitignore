@@ -20,7 +20,7 @@ __pycache__/
 
 # Generated outputs and model checkpoints
 results/
-*.joblib
+.joblib
 *.pt
 .pytest_cache/
 *.log

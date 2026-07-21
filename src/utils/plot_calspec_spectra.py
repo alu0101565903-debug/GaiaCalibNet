@@ -99,10 +99,10 @@ def plot_calspec_spectra(csv_path: str, fits_dir_str: str, plot_dir_str: str) ->
             plt.close()
 
             stats["rendered"] += 1
-            print(f"   [✓] Gráfico generado: {output_plot.name}")
+            print(f"   [✓] Graph generated: {output_plot.name}")
 
         except Exception as e:
-            print(f"   [!] Error procesando {star_name}: {e}")
+            print(f"   [!] Error processing {star_name}: {e}")
             stats["failed"] += 1
 
     # Display processing execution summary
