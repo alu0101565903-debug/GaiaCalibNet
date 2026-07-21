@@ -25,7 +25,7 @@ class PhysicsInformedLoss(nn.Module):
     - normalized Huber residuals,
     - relative integrated flux conservation,
     - gradient-based shape consistency,
-    - curvature smoothness.
+    - curvature smoothness (second derivative).
 
     Normalization prevents numerical issues with very small spectral fluxes,
     and optional noise variance can be supplied to weight residuals.
@@ -90,16 +90,15 @@ class PhysicsInformedLoss(nn.Module):
         )
         
         # 3. Shape/gradient loss on normalized spectrum.
-        #    Matches first-order spectral slope behavior rather than raw values.
+        #    Matches first-order spectral slope behavior relative to CALSPEC ground truth.
         grad_true = (y_true_norm[:, 1:] - y_true_norm[:, :-1])
         grad_pred = (y_pred_norm[:, 1:] - y_pred_norm[:, :-1])
         loss_grad = torch.mean((grad_true - grad_pred) ** 2)
         
-        # 4. Curvature smoothness loss on normalized spectrum.
-        #    Penalizes high-frequency wiggles in the predicted shape.
-        tv_loss = torch.mean((y_pred_norm[:, 1:] - y_pred_norm[:, :-1]) ** 2)
-        curv_loss = torch.mean((y_pred_norm[:, 2:] - 2 * y_pred_norm[:, 1:-1] + y_pred_norm[:, :-2]) ** 2)
-        loss_smooth = tv_loss + curv_loss
+        # 4. Pure curvature smoothness loss on normalized spectrum.
+        #    Penalizes high-frequency wiggles via second derivatives without 
+        #    penalizing physical spectral slopes.
+        loss_smooth = torch.mean((y_pred_norm[:, 2:] - 2 * y_pred_norm[:, 1:-1] + y_pred_norm[:, :-2]) ** 2)
         
         return loss_huber, loss_flux, loss_grad, loss_smooth
 
@@ -120,8 +119,8 @@ def adaptive_physics_wrapper(model, X_batch, Y_batch, loss_instance: PhysicsInfo
     Y_pred = model(X_batch)
     loss_huber, loss_flux, loss_grad, loss_smooth = loss_instance.compute_decoupled_components(Y_pred, Y_batch, noise_variance)
     
-    # Combine the two shape-based terms into a single shape loss component.
-    combined_shape_loss = loss_grad + (loss_instance.gamma * loss_smooth)
+    # Combine the two shape-based terms into a single shape loss component with correct weighting.
+    combined_shape_loss = (loss_instance.beta * loss_grad) + (loss_instance.gamma * loss_smooth)
     
     return loss_huber, loss_flux, combined_shape_loss
 

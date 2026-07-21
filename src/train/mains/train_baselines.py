@@ -19,6 +19,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, r2_score
 from src.models.baselines import get_baseline_models
+from src.utils.alternative_metrics import calculate_mape, calculate_pseudo_chi_square, calculate_band_errors
+
 
 def evaluate_baselines(mode: str = "spectrum"):
     """
@@ -101,12 +103,22 @@ def evaluate_baselines(mode: str = "spectrum"):
         # Rescale predictions back to physical flux units for evaluation.
         Y_pred = Y_pred_scaled * Y_max
         
-        # Compute performance on the original physical-scale targets.
-        mse = mean_squared_error(Y_test, Y_pred)
-        r2 = r2_score(Y_test, Y_pred)
+        # Compute alternative domain-specific metrics
+        Y_test_flat = Y_test.flatten()
+        Y_pred_flat = Y_pred.flatten()
         
-        print(f"    -> Physical Mean Squared Error (MSE) : {mse:.4e}")
-        print(f"    -> Unscaled R-squared (R2) Variance  : {r2:.4f}")
+        wave_grid_np = np.linspace(330.0, 1050.0, 300)
+        wave_flat = np.tile(wave_grid_np, len(Y_test))
+        
+        mape = calculate_mape(Y_test_flat, Y_pred_flat)
+        chi2 = calculate_pseudo_chi_square(Y_test_flat, Y_pred_flat)
+        band_errs = calculate_band_errors(wave_flat, Y_test_flat, Y_pred_flat)
+        
+        print(f"    -> Final MAPE (%)             : {mape:.4f}%")
+        print(f"    -> Final Pseudo Chi-Square    : {chi2:.4e}")
+        print(f"    -> MAE Blue Band (<500nm)     : {band_errs['blue']:.4e}")
+        print(f"    -> MAE Green Band (500-700nm) : {band_errs['green']:.4e}")
+        print(f"    -> MAE Red Band (>700nm)      : {band_errs['red']:.4e}")
         
         # Package the fitted model together with the scaling parameters so
         # that the baseline can be safely loaded and used for inference later.
@@ -114,9 +126,9 @@ def evaluate_baselines(mode: str = "spectrum"):
         model_save_path = os.path.join(output_dir, f"{sanitized_name}_{mode}.joblib")
         
         checkpoint = {
-            'model': model,
-            'scalers': scalers_dict,
-            'mode': mode
+            "model": model,
+            "scalers": scalers_dict,
+            "mode": mode
         }
         
         joblib.dump(checkpoint, model_save_path)

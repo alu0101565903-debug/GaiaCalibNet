@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 from src.models.neural_net import SpectralRecalibrationMLP
 
+
 def generate_comparative_plots(indices="all", max_plots=None):
     """
     Generates comparative spectral plots for the requested test stars.
@@ -63,14 +64,14 @@ def generate_comparative_plots(indices="all", max_plots=None):
     # 2. MODEL LOADING & BATCH INFERENCE (RANDOM FOREST)
     # Load the saved Random Forest baseline checkpoint and extract the trained
     # model handle. This allows the baseline predictions to be compared directly
-    # against both the Gaia input and the PINN output.
+    # against both the synthetic Gaia input and the PINN output.
     print("-> Loading pre-trained Random Forest model...")
     rf_path = "results/models/baselines/random_forest_spectrum.joblib"
     if not os.path.exists(rf_path):
         raise FileNotFoundError(f"Random Forest model not found at: {rf_path}")
     
     rf_checkpoint = joblib.load(rf_path)
-    rf_model = rf_checkpoint['model'] if isinstance(rf_checkpoint, dict) and 'model' in rf_checkpoint else rf_checkpoint
+    rf_model = rf_checkpoint["model"] if isinstance(rf_checkpoint, dict) and "model" in rf_checkpoint else rf_checkpoint
 
     print("   [*] Running RF batch inference...")
     # Batch inference on the full test split, with scaling reversed to physical flux.
@@ -88,9 +89,9 @@ def generate_comparative_plots(indices="all", max_plots=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # Extract architecture metadata from the checkpoint if available.
-    hidden_dims = pinn_checkpoint.get('hidden_dims', [256, 512, 256]) if isinstance(pinn_checkpoint, dict) else [256, 512, 256]
-    input_dim = pinn_checkpoint.get('input_dim', 300) if isinstance(pinn_checkpoint, dict) else 300
-    output_dim = pinn_checkpoint.get('output_dim', 300) if isinstance(pinn_checkpoint, dict) else 300
+    hidden_dims = pinn_checkpoint.get("hidden_dims", [256, 512, 256]) if isinstance(pinn_checkpoint, dict) else [256, 512, 256]
+    input_dim = pinn_checkpoint.get("input_dim", 300) if isinstance(pinn_checkpoint, dict) else 300
+    output_dim = pinn_checkpoint.get("output_dim", 300) if isinstance(pinn_checkpoint, dict) else 300
 
     # Recreate the exact network structure before loading weights.
     pinn_model = SpectralRecalibrationMLP(
@@ -103,12 +104,12 @@ def generate_comparative_plots(indices="all", max_plots=None):
     # Extract state dict robustly from common checkpoint formats.
     state_dict = None
     if isinstance(pinn_checkpoint, dict):
-        for key in ['model_state_dict', 'state_dict']:
+        for key in ["model_state_dict", "state_dict"]:
             if key in pinn_checkpoint:
                 state_dict = pinn_checkpoint[key]
                 break
-        if not state_dict and 'model' in pinn_checkpoint:
-            state_dict = pinn_checkpoint['model'] if isinstance(pinn_checkpoint['model'], dict) else None
+        if not state_dict and "model" in pinn_checkpoint:
+            state_dict = pinn_checkpoint["model"] if isinstance(pinn_checkpoint["model"], dict) else None
     else:
         state_dict = pinn_checkpoint
 
@@ -155,24 +156,24 @@ def generate_comparative_plots(indices="all", max_plots=None):
             print(f"   [!] Skipping index {star_index}: Out of bounds (Max: {total_test_stars-1})")
             continue
             
-        # Extract the original Gaia input spectrum, the CALSPEC reference
+        # Extract the original synthetic Gaia input spectrum, the CALSPEC reference
         # spectrum, and the two model prediction spectra for this star.
         x_gaia = X_test[star_index]    
         y_true = Y_test[star_index]      
         y_rf = Y_pred_rf_all[star_index]     
         y_pinn = Y_pred_pinn_all[star_index] 
 
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 8.5), gridspec_kw={'height_ratios': [3, 1]}, sharex=True)
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 8.5), gridspec_kw={"height_ratios": [3, 1]}, sharex=True)
         plt.subplots_adjust(hspace=0.05)
 
         # --- TOP PANEL: Absolute Spectra ---
-        # This panel shows the original uncalibrated Gaia spectrum, the true
+        # This panel shows the original uncalibrated synthetic Gaia spectrum, the true
         # CALSPEC reference, and the two model-corrected outputs.
-        ax1.set_title(f"Spectral Recalibration Output vs Ground Truth | Star Index: {star_index}", fontsize=14, pad=15, fontweight='bold')
-        ax1.plot(wavelengths, x_gaia, color='#264ab7', linewidth=1.8, alpha=0.5, label="Gaia Input (Uncalibrated)")
-        ax1.plot(wavelengths, y_true, color='black', linewidth=2, label="CALSPEC (True Flux)")
-        ax1.plot(wavelengths, y_rf, color='#2ca02c', linewidth=1.5, linestyle='--', label="Random Forest (Baseline)")
-        ax1.plot(wavelengths, y_pinn, color='#d62728', linewidth=1.5, alpha=0.9, label="Neural Net (PINN)")
+        ax1.set_title(f"Spectral Recalibration Output vs Ground Truth | Star Index: {star_index}", fontsize=14, pad=15, fontweight="bold")
+        ax1.plot(wavelengths, x_gaia, color="#264ab7", linewidth=1.8, alpha=0.5, label="Synthetic Gaia Input (Uncalibrated)")
+        ax1.plot(wavelengths, y_true, color="black", linewidth=2, label="CALSPEC (True Flux)")
+        ax1.plot(wavelengths, y_rf, color="#2ca02c", linewidth=1.5, linestyle="--", label="Random Forest (Baseline)")
+        ax1.plot(wavelengths, y_pinn, color="#d62728", linewidth=1.5, alpha=0.9, label="Neural Net (PINN)")
         
         ax1.set_ylabel(r"Absolute Flux $[erg \cdot s^{-1} \cdot cm^{-2} \cdot \AA^{-1}]$", fontsize=12)
         ax1.grid(True, alpha=0.3)
@@ -187,9 +188,9 @@ def generate_comparative_plots(indices="all", max_plots=None):
         res_pinn = ((y_pinn - y_true) / y_true_safe) * 100
 
         ax2.plot(wavelengths, res_gaia, color="#4542e2", linewidth=1.2, alpha=0.4, label="Gaia Original Error")
-        ax2.plot(wavelengths, res_rf, color='#2ca02c', linewidth=1.2, linestyle='--')
-        ax2.plot(wavelengths, res_pinn, color='#d62728', linewidth=1.2, alpha=0.9)
-        ax2.axhline(0, color='black', linewidth=1.5, linestyle=':')
+        ax2.plot(wavelengths, res_rf, color="#2ca02c", linewidth=1.2, linestyle="--")
+        ax2.plot(wavelengths, res_pinn, color="#d62728", linewidth=1.2, alpha=0.9)
+        ax2.axhline(0, color="black", linewidth=1.5, linestyle="-")
         
         ax2.set_xlabel(r"Wavelength $\lambda$ $[nm]$", fontsize=12)
         ax2.set_ylabel("Residuals [%]", fontsize=12)
@@ -197,7 +198,7 @@ def generate_comparative_plots(indices="all", max_plots=None):
         ax2.grid(True, alpha=0.3)
 
         save_path = f"results/plots/models_performance_comparison/spectrum_comparison_idx{star_index}.png"
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
         plt.close(fig)  # Free memory by closing the figure
         
     # Summary message after all requested plots have been written to disk.
@@ -210,10 +211,10 @@ if __name__ == "__main__":
     # generate_comparative_plots(indices=4)
     
     # 2. Plot a specific list of stars:
-    generate_comparative_plots(indices=[0, 4, 15, 42])
+    # generate_comparative_plots(indices=[0, 5])
     
     # 3. Plot ALL stars (warning: this may use a large amount of disk space):
-    # generate_comparative_plots(indices="all")
+    generate_comparative_plots(indices="all")
     
     # 4. Plot the first 20 stars from the entire dataset:
     # generate_comparative_plots(indices="all", max_plots=20)
