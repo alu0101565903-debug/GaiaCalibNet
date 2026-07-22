@@ -171,7 +171,7 @@ if __name__ == "__main__":
     # --- CONFIGURATION PANEL ---
     # Choose which test mode to run: "noisy", "red_dwarfs", "blue_stars", or "manual"
     # =====================================================================
-    TEST_MODE = "blue_stars"  
+    TEST_MODE = "manual"
     
     # Provide IDs here if TEST_MODE is set to "manual"
     MANUAL_IDS = [
@@ -192,7 +192,7 @@ if __name__ == "__main__":
         query = """
             SELECT TOP 3 source_id 
             FROM gaiadr3.gaia_source 
-            WHERE has_xp_continuous = "True" AND phot_g_mean_mag > 15.0 
+            WHERE has_xp_continuous = 'true' AND phot_g_mean_mag > 15.0 
             ORDER BY random_index
         """
         print("-> Querying Gaia Archive for faint/noisy stars...")
@@ -204,7 +204,7 @@ if __name__ == "__main__":
         query = """
             SELECT TOP 3 source_id 
             FROM gaiadr3.gaia_source 
-            WHERE has_xp_continuous = "True" AND bp_rp > 2.5
+            WHERE has_xp_continuous = 'true' AND bp_rp > 2.5
             ORDER BY random_index
         """
         print("-> Querying Gaia Archive for Red Dwarfs...")
@@ -216,7 +216,7 @@ if __name__ == "__main__":
         query = """
             SELECT TOP 3 source_id 
             FROM gaiadr3.gaia_source 
-            WHERE has_xp_continuous = "True" AND bp_rp < -0.1
+            WHERE has_xp_continuous = 'true' AND bp_rp < -0.1
             ORDER BY random_index
         """
         print("-> Querying Gaia Archive for Hot Blue Stars...")

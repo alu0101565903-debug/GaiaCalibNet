@@ -41,8 +41,6 @@ def plot_calspec_spectra(csv_path: str, fits_dir_str: str, plot_dir_str: str) ->
     plot_dir.mkdir(parents=True, exist_ok=True)
     df = pd.read_csv(csv_file)
 
-    # Target wavelength range bounds in Angstroms
-    WAVE_MIN, WAVE_MAX = 3000.0, 11000.0
     stats = {"rendered": 0, "failed": 0}
 
     # Iterate over each catalog target
@@ -68,6 +66,17 @@ def plot_calspec_spectra(csv_path: str, fits_dir_str: str, plot_dir_str: str) ->
                 wavelengths = data[wave_col]
                 fluxes = data[flux_col]
 
+            # Target wavelength range bounds in Angstroms
+            #WAVE_MIN, WAVE_MAX = 3000.0, 11000.0
+
+            # Definimos la ventana científica relevante
+            WAVE_MIN_LIMIT = 3000.0
+            WAVE_MAX_LIMIT = 11000.0
+
+            # Ajuste dinámico inteligente: se adapta al FITS pero dentro de la ventana útil
+            WAVE_MIN = max(WAVE_MIN_LIMIT, wavelengths.min())
+            WAVE_MAX = min(WAVE_MAX_LIMIT, wavelengths.max())
+
             # Mask data to target spectral window (3000 - 11000 Å)
             mask = (wavelengths >= WAVE_MIN) & (wavelengths <= WAVE_MAX)
             if not mask.any():
@@ -81,7 +90,7 @@ def plot_calspec_spectra(csv_path: str, fits_dir_str: str, plot_dir_str: str) ->
 
             # Build spectral plot figure
             plt.figure(figsize=(10, 5))
-            plt.plot(wavelengths, fluxes, color="#1f77b4", linewidth=1.2, label="CALSPEC Reference")
+            plt.plot(wavelengths[mask], fluxes[mask], color="#1f77b4", linewidth=1.2, label="CALSPEC Reference")
 
             plt.xlim(WAVE_MIN, WAVE_MAX)
             plt.ylim(y_min, y_max)

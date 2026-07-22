@@ -30,7 +30,7 @@ class PhysicsInformedLoss(nn.Module):
     Normalization prevents numerical issues with very small spectral fluxes,
     and optional noise variance can be supplied to weight residuals.
     """
-    def __init__(self, wavelength_grid: torch.Tensor, alpha: float = 1.0, beta: float = 1.0, gamma: float = 5.0, delta: float = 1.0):
+    def __init__(self, wavelength_grid: torch.Tensor, alpha: float = 1.0, beta: float = 1.0, gamma: float = 5.0, delta: float = 1.0, boost_range: tuple = (400.0, 500.0), boost_factor: float = 2.5):
         super().__init__()
         # Store the wavelength grid as a persistent tensor that moves with the model.
         self.register_buffer("wavelength_grid", wavelength_grid.detach().clone())
@@ -50,6 +50,12 @@ class PhysicsInformedLoss(nn.Module):
         weights[-1] = 0.5 * delta_lambda[-1]
         weights[1:-1] = 0.5 * (delta_lambda[:-1] + delta_lambda[1:])
         self.register_buffer("integration_weights", weights)
+
+        channel_weights = torch.ones_like(self.wavelength_grid)
+        mask = (self.wavelength_grid >= boost_range[0]) & (self.wavelength_grid <= boost_range[1])
+        channel_weights[mask] *= boost_factor
+        self.register_buffer("channel_weights", channel_weights)
+
 
     def compute_decoupled_components(self, y_pred: torch.Tensor, y_true: torch.Tensor, noise_variance: torch.Tensor = None):
         """Compute each loss component independently for analysis and combination.
@@ -73,14 +79,17 @@ class PhysicsInformedLoss(nn.Module):
             sigma_norm = torch.sqrt(noise_variance + 1e-12) / scale
             normalized_residuals = (y_pred_norm - y_true_norm) / sigma_norm
             abs_res = torch.abs(normalized_residuals)
-            loss_huber = torch.where(
+            
+            huber_elementwise = torch.where(
                 abs_res < self.delta,
                 0.5 * (normalized_residuals ** 2),
                 self.delta * (abs_res - 0.5 * self.delta),
-            ).mean()
+            )
+            loss_huber = (huber_elementwise * self.channel_weights).mean()
         else:
-            loss_huber = F.huber_loss(y_pred_norm, y_true_norm, delta=self.delta, reduction="mean")
-        
+            huber_elementwise = F.huber_loss(y_pred_norm, y_true_norm, delta=self.delta, reduction="none")
+            loss_huber = (huber_elementwise * self.channel_weights).mean()
+
         # 2. Flux conservation loss. This compares integrated flux over the
         #    wavelength grid, enforcing global energy consistency.
         integrated_flux_true = torch.sum(y_true * self.integration_weights.unsqueeze(0), dim=1)
