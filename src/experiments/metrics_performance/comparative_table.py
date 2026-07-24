@@ -11,7 +11,7 @@ Purpose:
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
-from src.experiments.metrics.helpers import simulate_spectra, evaluate_predictions
+from src.experiments.metrics_performance.helpers import simulate_spectra, evaluate_predictions
 
 if __name__ == "__main__": 
 
@@ -71,14 +71,14 @@ if __name__ == "__main__":
     output_path = os.path.join(output_dir, "comparative_table.png")
 
     fig, ax = plt.subplots(figsize=(15, 2.8), dpi=300)
-    ax.axis('tight')
-    ax.axis('off')
+    ax.axis("tight")
+    ax.axis("off")
 
     table = ax.table(
         cellText=df.values,
         colLabels=df.columns,
-        cellLoc='center',
-        loc='center'
+        cellLoc="center",
+        loc="center"
     )
 
     table.auto_set_column_width(col=list(range(len(df.columns))))
@@ -88,23 +88,23 @@ if __name__ == "__main__":
 
     # Apply aesthetic styling to the Matplotlib table
     for (row, col), cell in table.get_celld().items():
-        cell.set_edgecolor('#cccccc')
+        cell.set_edgecolor("#cccccc")
         cell.set_linewidth(0.5)
         
         if row == 0:
             # Table Header styling
-            cell.set_text_props(weight='bold', color='#111111')
-            cell.set_facecolor('#f2f5f8')
+            cell.set_text_props(weight="bold", color="#111111")
+            cell.set_facecolor("#f2f5f8")
             cell.set_linewidth(1.5)
         else:
             # Highlight our PINN model row to emphasize superior scientific performance
             if row == 3:
-                cell.set_text_props(weight='bold', color='#0f4c81')
-                cell.set_facecolor('#f4f9fc')
+                cell.set_text_props(weight="bold", color="#0f4c81")
+                cell.set_facecolor("#f4f9fc")
                 cell.set_linewidth(1.0)
             else:
-                cell.set_facecolor('#ffffff')
+                cell.set_facecolor("#ffffff")
 
-    plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
+    plt.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"\nDone — Image generated and saved: {output_path}")

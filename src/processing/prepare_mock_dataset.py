@@ -1,5 +1,8 @@
-"""Prepare and save the dataset used for training and evaluation.
+"""
+Module: prepare_mock_dataset.py
+Report Section: 5.0 Mock Dataset Preparation
 
+Prepare and save the dataset used for training and evaluation.
 This module constructs a regression dataset by matching CALSPEC FITS files to Gaia
 source identifiers, degrading the CALSPEC spectra to Gaia-like resolution,
 interpolating onto a shared wavelength grid, and saving the final physical flux 
@@ -10,7 +13,7 @@ import os
 import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d
-from src.utils.dataset_utils import (
+from src.utils.data.dataset_utils import (
     load_calspec_fits,
     degrade_spectral_resolution,
     mock_load_gaia_observed_spectrum,
@@ -114,7 +117,7 @@ def build_and_save_dataset(
             
             # 3. Align the ground truth spectrum (Y) onto the common homogeneous grid.
             # Cubic interpolation preserves smoothness and avoids sharp artifacts.
-            y_interp_func = interp1d(deg_wave, deg_flux, kind='cubic', fill_value="extrapolate")
+            y_interp_func = interp1d(deg_wave, deg_flux, kind="cubic", fill_value="extrapolate")
             y_flux_aligned = y_interp_func(wave_length_grid)
             
             # 4. Generate the corresponding Gaia BP/RP spectrum (X) from the degraded CALSPEC data.

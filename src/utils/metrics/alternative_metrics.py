@@ -28,9 +28,9 @@ def calculate_mape(y_true: np.ndarray, y_pred: np.ndarray, epsilon: float = 1e-8
     """Mean Absolute Percentage Error (MAPE).
 
     Parameters:
-    - y_true: ground truth flux array (1-D)
-    - y_pred: predicted flux array (1-D)
-    - epsilon: small value to avoid division by zero when `y_true` is zero.
+    - y_true (np.ndarray): ground truth flux array (1-D)
+    - y_pred (np.ndarray): predicted flux array (1-D)
+    - epsilon (float): small value to avoid division by zero when `y_true` is zero.
 
     Returns:
     - MAPE expressed as percentage (float).
@@ -52,9 +52,9 @@ def calculate_pseudo_chi_square(y_true: np.ndarray, y_pred: np.ndarray, epsilon:
     true flux is small (e.g., spectral edges), which helps reveal edge-divergence.
 
     Parameters:
-    - y_true: ground truth flux array (1-D)
-    - y_pred: predicted flux array (1-D)
-    - epsilon: small value added to denominator for numerical stability.
+    - y_true (np.ndarray): ground truth flux array (1-D)
+    - y_pred (np.ndarray): predicted flux array (1-D)
+    - epsilon (float): small value added to denominator for numerical stability.
 
     Returns:
     - scalar pseudo chi-square value (float).
@@ -64,16 +64,17 @@ def calculate_pseudo_chi_square(y_true: np.ndarray, y_pred: np.ndarray, epsilon:
 
 
 def calculate_band_errors(wavelengths: np.ndarray, y_true: np.ndarray, y_pred: np.ndarray) -> dict:
-    """Band-specific mean absolute errors.
+    """
+    Band-specific mean absolute errors.
 
     Computes mean absolute error for three spectral bands defined by
     wavelength thresholds. Useful to quantify performance differences
     across blue/visual/near-IR regions.
 
     Parameters:
-    - wavelengths: 1-D array of wavelength values in nanometers.
-    - y_true: ground truth flux array (1-D, same length as `wavelengths`).
-    - y_pred: predicted flux array (1-D).
+    - wavelengths (np.ndarray): 1-D array of wavelength values in nanometers.
+    - y_true (np.ndarray): ground truth flux array (1-D, same length as `wavelengths`).
+    - y_pred (np.ndarray): predicted flux array (1-D).
 
     Returns:
     - dict with keys "blue", "green", "red" mapping to MAE floats.

@@ -1,6 +1,6 @@
 """
 Module: plot_metric_limitation_analysis.py
-Path: src/experiments/metrics/plot_metric_limitation_analysis.py
+Report Section:
 
 Purpose:
     Generates a comparative figure showing how standard global metrics 
@@ -10,7 +10,7 @@ Purpose:
 
 import os
 import matplotlib.pyplot as plt
-from src.experiments.metrics.helpers import simulate_spectra, evaluate_predictions
+from src.experiments.metrics_performance.helpers import simulate_spectra, evaluate_predictions
 
 def generate_metric_limitation_plot(out_dir: str = "results/plots/metrics_analysis"):
     """

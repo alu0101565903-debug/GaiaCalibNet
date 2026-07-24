@@ -1,6 +1,6 @@
 r"""
 Module: plot_residual_histogram.py
-Path: src/experiments/metrics/plot_residual_histogram.py
+Report Section:
 
 Purpose:
     Generates a comparative residual histogram plot to prove the physical consistency
@@ -12,7 +12,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import norm
-from src.experiments.metrics.helpers import simulate_spectra
+from src.experiments.metrics_performance.helpers import simulate_spectra
 
 def generate_residual_histogram_plot(out_dir: str = "results/plots/metrics_analysis"):
     """

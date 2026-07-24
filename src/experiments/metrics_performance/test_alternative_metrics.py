@@ -1,6 +1,6 @@
 """
 Script: test_alternative_metrics.py
-Path: src/experiments/metrics/test_alternative_metrics.py
+Report Section:
 
 Description:
     A lightweight, deterministic experiment to quickly demonstrate and verify
@@ -8,7 +8,7 @@ Description:
     standard statistical metrics (MSE, R2) easily miss.
 """
 
-from src.experiments.metrics.helpers import simulate_spectra, evaluate_predictions
+from src.experiments.metrics_performance.helpers import simulate_spectra, evaluate_predictions
 
 def run_experiment():
     """

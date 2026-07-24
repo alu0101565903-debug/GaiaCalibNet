@@ -19,7 +19,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, r2_score
 from src.models.baselines import get_baseline_models
-from src.utils.alternative_metrics import calculate_mape, calculate_pseudo_chi_square, calculate_band_errors
+from src.utils.metrics.alternative_metrics import calculate_mape, calculate_pseudo_chi_square, calculate_band_errors
 
 
 def evaluate_baselines(mode: str = "spectrum"):
@@ -28,8 +28,8 @@ def evaluate_baselines(mode: str = "spectrum"):
     evaluates classical baseline models, and saves both models and scalers.
 
     Parameters:
-    - mode (str): Training mode, either 'spectrum' (autoencoder/recalibrator) 
-                  or 'features' (stellar parameters mapping).
+    - mode (str): Training mode, either "spectrum" (autoencoder/recalibrator) 
+                  or "features" (stellar parameters mapping).
     """
     print("=" * 60)
     print(f"[7.0] EXECUTING CLASSICAL BASELINE MODELS | MODE: {mode.upper()}")
@@ -66,7 +66,7 @@ def evaluate_baselines(mode: str = "spectrum"):
     # 5. Pipeline Alignment: Coordinated Scaling Protocol
     scalers_dict = {}
     Y_max = float(np.max(np.abs(Y_train)))
-    scalers_dict['Y_max'] = Y_max
+    scalers_dict["Y_max"] = Y_max
     
     if mode == "spectrum":
         # Scale the spectrum inputs by the maximum absolute training flux.
@@ -79,7 +79,7 @@ def evaluate_baselines(mode: str = "spectrum"):
         scaler_X = StandardScaler()
         X_train_scaled = scaler_X.fit_transform(X_train)
         X_test_scaled = scaler_X.transform(X_test)
-        scalers_dict['scaler_X'] = scaler_X
+        scalers_dict["scaler_X"] = scaler_X
         
         # Target spectrum flux values still require linear scaling by Y_max.
         Y_train_scaled = Y_train / Y_max

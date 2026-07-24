@@ -3,11 +3,11 @@ Module: crossmatch.py
 Report Section: 4.2 Gaia Data Retrieval & 4.3 Catalog Cross-matching
 
 This script automates querying the Gaia DR3 database using coordinates from the
-CALSPEC reference catalog. It queries Gaia DR3 using a standard, stable ADQL query,
-and resolves epoch propagation (J2016.0 to J2000) and angular separation locally 
-via Astropy to guarantee server stability.
+CALSPEC reference catalog. It uses a relaxed ADQL query to capture bright calibration
+standards and white dwarfs, resolving epoch propagation (J2016.0 to J2000.0) and angular 
+separation locally via Astropy.
 
-Features auto-fallback to Heidelberg GAVO TAP mirror if ESA main archive is down.
+Features auto-fallback to the Heidelberg GAVO TAP mirror if the ESA main archive is down.
 """
 
 import os
@@ -20,55 +20,71 @@ from astropy.time import Time
 from astroquery.gaia import Gaia
 from astroquery.utils.tap.core import TapPlus
 
-# Silence astronomical warnings to keep the terminal clean
+# Silence astronomical warnings to keep the terminal output clean
 warnings.filterwarnings("ignore")
 
 def get_tap_client():
     """
-    Checks if ESA Gaia is responsive. If not, returns a connection to the
-    Heidelberg GAVO TAP Mirror so the pipeline never halts.
+    Checks the primary ESA Gaia archive and official European mirrors.
+    Iterates through fallback servers until an active connection is established.
     """
-    print("-> Checking ESA Gaia main archive status...")
     test_query = "SELECT TOP 1 source_id FROM gaiadr3.gaia_source"
-    try:
-        # Test the primary ESA Gaia archive with a lightweight query.
-        # This avoids running expensive crossmatch jobs before verifying server health.
-        job = Gaia.launch_job(test_query, verbose=False)
-        _ = job.get_results()
-        print("[✓] ESA Gaia server is ONLINE. Proceeding with main server.")
-        return Gaia
-    except Exception:
-        print("[!] ESA Gaia is down or under maintenance. Redirecting to Heidelberg GAVO Mirror...")
+    
+    # List of official Gaia TAP mirrors
+    tap_servers = [
+        ("ESA Main", "https://gea.esac.esa.int/tap-server/tap"),
+        ("ARI Heidelberg", "https://gaia.ari.uni-heidelberg.de/tap"),
+        ("AIP Potsdam", "https://gaia.aip.de/tap"),
+        ("INAF Italy", "https://gaia.inaf.it/tap")
+    ]
+
+    for name, url in tap_servers:
+        print(f"-> Testing connection to {name}...")
         try:
-            # Connect to the GAVO Heidelberg TAP mirror as a fallback.
-            # The mirror exposes the same Gaia ADQL schema and can handle the same queries.
-            gavo_tap = TapPlus(url="http://gavo.ari.uni-heidelberg.de/tap")
-            # Verify connectivity before attempting the full crossmatch.
-            job = gavo_tap.launch_job(test_query, verbose=False)
-            _ = job.get_results()
-            print("[✓] Connected successfully to GAVO Heidelberg mirror!")
-            return gavo_tap
+            if name == "ESA Main":
+                # Astroquery default Gaia object routes to ESA
+                job = Gaia.launch_job(test_query, verbose=False)
+                _ = job.get_results()
+                print(f"[✓] {name} is ONLINE. Proceeding with the main server.")
+                return Gaia
+            else:
+                # Use TapPlus for alternative mirrors
+                tap_node = TapPlus(url=url)
+                job = tap_node.launch_job(test_query, verbose=False)
+                _ = job.get_results()
+                print(f"[✓] Connected successfully to {name} mirror!")
+                return tap_node
         except Exception as e:
-            raise RuntimeError(f"Critical: Both ESA and GAVO mirror are unreachable. Details: {e}")
+            # Catch HTML maintenance responses and generic connection errors
+            print(f"  [!] {name} is unreachable or in maintenance.")
+            continue
 
+    raise RuntimeError("Critical Error: ESA main server and all European backup mirrors are unreachable.")
 
-def run_crossmatch(input_csv: str, output_csv: str, max_separation_arcsec: float = 1.0):
+def run_crossmatch(input_csv: str, output_csv: str, max_separation_arcsec: float = 5.0):
     """
     Performs a stable ADQL crossmatch with Gaia DR3, handling epoch propagation 
-    and candidate filtering locally to avoid Gaia server 500 errors.
+    and candidate filtering locally to avoid Gaia server timeout errors and to 
+    preserve high proper-motion stars.
+    
+    Parameters:
+        input_csv (str): Path to the input CALSPEC catalog CSV.
+        output_csv (str): Path where the matched catalog will be saved.
+        max_separation_arcsec (float): Maximum allowed angular separation in arcseconds 
+                                       at epoch J2000.0 (default is 5.0").
     """
     print("=" * 60)
     print("RUNNING STABLE CROSS-MATCH: CALSPEC <-> GAIA DR3 (LOCAL EPOCH PROP)")
     print("=" * 60)
     
     if not os.path.exists(input_csv):
-        print(f"[!] Critical Error: File {input_csv} does not exist.")
+        print(f"[!] Critical Error: File '{input_csv}' does not exist.")
         return
 
     df_calspec = pd.read_csv(input_csv, encoding="utf-8-sig")
-    # Strip whitespace from column names to avoid lookup errors when the CSV has extra spaces.
+    # Strip whitespace from column names to avoid lookup errors
     df_calspec.columns = df_calspec.columns.str.strip()
-    print(f"-> Loading {len(df_calspec)} targets from CALSPEC catalog...")
+    print(f"-> Loading {len(df_calspec)} targets from the CALSPEC catalog...")
     
     # Resolve and select the operational server (ESA or GAVO Heidelberg)
     try:
@@ -88,27 +104,26 @@ def run_crossmatch(input_csv: str, output_csv: str, max_separation_arcsec: float
         if pd.isna(ra_calspec) or pd.isna(dec_calspec):
             continue
 
-        # CALSPEC base coordinates in J2000
+        # CALSPEC base coordinates at epoch J2000.0
         coord_calspec = SkyCoord(ra=ra_calspec, dec=dec_calspec, unit=(u.deg, u.deg), frame="icrs")
 
-        # Build a stable ADQL query around the CALSPEC coordinates.
-        # The search radius is 3 arcseconds in ICRS and the query filters for
-        # Gaia sources with continuous XP spectra and a reliable RUWE value.
+        # Simplified ADQL query:
+        # 1. 30" search radius to account for proper motion over 16 years (J2000 to J2016).
+        # 2. has_xp_continuous = true (strict boolean expression for PostgreSQL).
+        # 3. Removed RUWE and G-mag restrictions to prevent dropping bright calibration standards.
         query = f"""
         SELECT 
             source_id, ra, dec, parallax, pmra, pmdec, phot_g_mean_mag, bp_rp, ruwe
         FROM gaiadr3.gaia_source
         WHERE 1=CONTAINS(
             POINT('ICRS', ra, dec),
-            CIRCLE('ICRS', {ra_calspec}, {dec_calspec}, {3.0 / 3600.0})
+            CIRCLE('ICRS', {ra_calspec}, {dec_calspec}, {30.0 / 3600.0})
         )
-        AND has_xp_continuous = 'True'
-        AND ruwe < 1.4
-        AND phot_g_mean_mag > 3.0
+        AND has_xp_continuous = 'true'
         """
         
         try:
-            # Querying the active server instance
+            # Execute query on the active server instance
             job = tap_service.launch_job(query, verbose=False)
             results = job.get_results()
             
@@ -116,7 +131,7 @@ def run_crossmatch(input_csv: str, output_csv: str, max_separation_arcsec: float
                 candidates = []
                 
                 for match in results:
-                    # Clean proper motions and parallax fields
+                    # Clean proper motion and parallax fields (handle missing/masked values)
                     pmra_val = 0.0 if np.ma.is_masked(match["pmra"]) or np.isnan(match["pmra"]) else match["pmra"]
                     pmdec_val = 0.0 if np.ma.is_masked(match["pmdec"]) or np.isnan(match["pmdec"]) else match["pmdec"]
                     
@@ -124,7 +139,7 @@ def run_crossmatch(input_csv: str, output_csv: str, max_separation_arcsec: float
                     plx_val = 0.0 if np.ma.is_masked(plx_raw) or np.isnan(plx_raw) or plx_raw <= 0 else plx_raw
 
                     # Build the Gaia source coordinate at the Gaia reference epoch J2016.0.
-                    # If parallax is invalid, omit the distance and only use proper motions.
+                    # If the parallax is invalid, omit the distance and only use proper motions.
                     coord_gaia_j2016 = SkyCoord(
                         ra = match["ra"] * u.deg, 
                         dec = match["dec"] * u.deg, 
@@ -136,18 +151,18 @@ def run_crossmatch(input_csv: str, output_csv: str, max_separation_arcsec: float
                     )
                     
                     # Propagate Gaia coordinates back to J2000.0 using proper motion.
-                    # This enables a direct comparison with the CALSPEC catalog coordinates.
+                    # This enables a direct and accurate comparison with the CALSPEC catalog.
                     coord_gaia_j2000 = coord_gaia_j2016.apply_space_motion(new_obstime=Time("J2000.0"))
 
-                    # Compute the angular separation between the original CALSPEC position
-                    # and the propagated Gaia position at epoch J2000.
+                    # Compute the physical angular separation at epoch J2000.0
                     angular_sep = coord_calspec.separation(coord_gaia_j2000).arcsec
 
-                    # Physical check: must be closer than tolerance limit
+                    # Validate candidate against the maximum separation tolerance
                     if angular_sep <= max_separation_arcsec:
                         candidates.append((angular_sep, match))
                 
                 if candidates:
+                    # Sort candidates by minimum angular distance
                     candidates.sort(key=lambda x: x[0])
                     best_sep, best_match = candidates[0]
                     
@@ -169,9 +184,9 @@ def run_crossmatch(input_csv: str, output_csv: str, max_separation_arcsec: float
                     })
                     print(f"  [✓] {target_name:<15} -> MATCHED at {best_sep:.3f}\" (G-mag: {best_match['phot_g_mean_mag']:.2f})")
                 else:
-                    print(f"  [X] {target_name:<15} -> Filtered out (No candidates within {max_separation_arcsec}\" at J2000)")
+                    print(f"  [X] {target_name:<15} -> Filtered out (No candidates within {max_separation_arcsec}\" at J2000.0)")
             else:
-                print(f"  [X] {target_name:<15} -> No Gaia DR3 counterparts found.")
+                print(f"  [X] {target_name:<15} -> No Gaia DR3 continuous XP counterpart found.")
                 
         except Exception as e:
             print(f"  [!] Query failed for {target_name}: {e}")
@@ -181,13 +196,15 @@ def run_crossmatch(input_csv: str, output_csv: str, max_separation_arcsec: float
     if crossmatch_data:
         df_final = pd.DataFrame(crossmatch_data)
         initial_len = len(df_final)
-        # Keep only the closest Gaia match per source_id to avoid duplicate entries.
+        
+        # Keep only the closest Gaia match per source_id to avoid duplicate entries
         df_final = df_final.sort_values("angular_distance_arcsec").drop_duplicates(subset=["gaia_source_id"], keep="first")
         duplicate_count = initial_len - len(df_final)
         
         if duplicate_count > 0:
             print(f"\n[i] Resolved {duplicate_count} crossmatch conflicts via minimal angular distance routing.")
 
+        # Ensure output directory exists before saving
         os.makedirs(os.path.dirname(output_csv), exist_ok=True)
         df_final.to_csv(output_csv, index=False)
         
@@ -202,4 +219,6 @@ def run_crossmatch(input_csv: str, output_csv: str, max_separation_arcsec: float
 if __name__ == "__main__":
     input_file = "data/raw/calspec_catalog.csv"
     output_file = "data/processed/crossmatch_catalog.csv"
-    run_crossmatch(input_file, output_file)
+    
+    # Executing the pipeline with a 5.0 arcsec tolerance at J2000
+    run_crossmatch(input_file, output_file, max_separation_arcsec=5.0)

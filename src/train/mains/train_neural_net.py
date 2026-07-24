@@ -20,7 +20,7 @@ from sklearn.preprocessing import StandardScaler
 from src.models.neural_net import SpectralRecalibrationMLP
 from src.train.loss.losses import PhysicsInformedLoss, adaptive_physics_wrapper
 from src.train.training_functions.adp_training_strategies import train_2stage_adaptive
-from src.utils.alternative_metrics import (
+from src.utils.metrics.alternative_metrics import (
     calculate_band_errors,
     calculate_mape,
     calculate_pseudo_chi_square,
@@ -182,7 +182,7 @@ def train_network(mode: str = "spectrum"):
     model.to(device).eval()
     with torch.no_grad():
         # Predict on validation inputs and restore predictions to absolute physical flux units.
-        Y_pred = model(to_tensor(X_test_scaled)).cpu().numpy() * Y_max
+        Y_pred = model(to_tensor(X_test_scaled)).detach().cpu().numpy() * Y_max
 
     # Flatten arrays because alternative_metrics expects 1-D arrays
     Y_test_flat = Y_test.flatten()
