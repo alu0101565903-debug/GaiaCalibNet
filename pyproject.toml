@@ -16,6 +16,7 @@ dependencies = [
     "pyarrow>=15.0.0",
     "astropy>=6.0.0",
     "astroquery>=0.4.7",
+    "gaiaxpy",
     "matplotlib>=3.8.0",
     "seaborn>=0.13.0",
     "scikit-learn>=1.4.0",

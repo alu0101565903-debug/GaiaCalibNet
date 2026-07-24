@@ -171,7 +171,7 @@ if __name__ == "__main__":
     # --- CONFIGURATION PANEL ---
     # Choose which test mode to run: "noisy", "red_dwarfs", "blue_stars", or "manual"
     # =====================================================================
-    TEST_MODE = "manual"
+    TEST_MODE = "blue_stars"  
     
     # Provide IDs here if TEST_MODE is set to "manual"
     MANUAL_IDS = [

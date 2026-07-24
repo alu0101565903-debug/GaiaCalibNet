@@ -1,4 +1,5 @@
-"""Utility helpers for CALSPEC and Gaia spectral preprocessing.
+"""
+Module: dataset_utils.py
 
 This module provides functions to load CALSPEC FITS spectra, convert them into a
 consistent physical units grid, degrade spectral resolution to resemble Gaia
@@ -11,17 +12,18 @@ from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d
 
 def load_calspec_fits(fits_path: str) -> tuple[np.ndarray, np.ndarray]:
-    """Load a CALSPEC FITS file and return wavelength and flux arrays.
+    """
+    Load a CALSPEC FITS file and return wavelength and flux arrays.
 
     The CALSPEC FITS format stores wavelength values in Angstroms. This helper
     reads the FITS binary table, converts the wavelength axis to nanometers,
     and returns arrays suitable for downstream processing.
 
     Parameters:
-        fits_path (str): Path to the CALSPEC FITS file.
+    - fits_path (str): Path to the CALSPEC FITS file.
 
     Returns:
-        tuple[np.ndarray, np.ndarray]: Wavelengths in nanometers and flux values.
+    - tuple[np.ndarray, np.ndarray]: Wavelengths in nanometers and flux values.
     """
     with fits.open(fits_path) as hdul:
         data = hdul[1].data
@@ -39,19 +41,20 @@ def degrade_spectral_resolution(
     flux: np.ndarray,
     sigma_nm: float = 8.0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Degrade a high-resolution spectrum using a Gaussian line spread function.
+    """
+    Degrade a high-resolution spectrum using a Gaussian line spread function.
 
     This function interpolates the original high-resolution spectrum onto a finer
     grid and applies Gaussian smoothing to approximate the broader instrument
     response expected from Gaia BP/RP observations.
 
     Parameters:
-        wave_nm (np.ndarray): Original wavelength grid in nanometers.
-        flux (np.ndarray): Original flux values.
-        sigma_nm (float): Smoothing width in nanometers.
+    - wave_nm (np.ndarray): Original wavelength grid in nanometers.
+    - flux (np.ndarray): Original flux values.
+    - sigma_nm (float): Smoothing width in nanometers.
 
     Returns:
-        tuple[np.ndarray, np.ndarray]: Degraded wavelength grid and flux values.
+    - tuple[np.ndarray, np.ndarray]: Degraded wavelength grid and flux values.
     """
     # Create a finer grid to avoid aliasing artifacts during convolution.
     fine_grid = np.linspace(wave_nm.min(), wave_nm.max(), len(wave_nm) * 2)

@@ -29,9 +29,9 @@ def train_adam_adaptive(model, epochs, dataloader, physics_criterion, lr=0.001):
     
     # 1. Initialize adaptive log-variance parameters (s = log(sigma^2))
     # Starting at 0.0 means initial weight exp(-0) = 1.0
-    log_var_data = nn.Parameter(torch.tensor(0.0, device=device))
-    log_var_flux = nn.Parameter(torch.tensor(0.0, device=device))
-    log_var_grad = nn.Parameter(torch.tensor(0.0, device=device))
+    log_var_data = nn.Parameter(torch.tensor(0.0, dtype=torch.float32, device=device))
+    log_var_flux = nn.Parameter(torch.tensor(0.0, dtype=torch.float32, device=device))
+    log_var_grad = nn.Parameter(torch.tensor(0.0, dtype=torch.float32, device=device))
     log_vars = [log_var_data, log_var_flux, log_var_grad]
 
     # Combine model parameters and the dynamically learned weights in the optimizer
@@ -164,7 +164,8 @@ def train_2stage_adaptive(model, dataloader, X_full, Y_full, physics_criterion, 
         model, 
         epochs=epochs_adam, 
         dataloader=dataloader, 
-        physics_criterion=physics_criterion
+        physics_criterion=physics_criterion,
+        lr=0.001
     )
     
     # Stage 2: L-BFGS

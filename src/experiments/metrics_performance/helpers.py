@@ -9,7 +9,7 @@ Purpose:
 """
 
 import numpy as np
-from src.utils.alternative_metrics import calculate_mape, calculate_band_errors, calculate_pseudo_chi_square
+from src.utils.metrics.alternative_metrics import calculate_mape, calculate_band_errors, calculate_pseudo_chi_square
 
 def get_wavelength_grid(n_channels: int = 300) -> np.ndarray:
     """

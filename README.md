@@ -37,7 +37,7 @@ pip install -r requirements.txt
 Generate the processed crossmatch catalog from the CALSPEC source list:
 
 ```bash
-python3 -m src.processing.crossmatch_wd
+python3 -m src.processing.crossmatch
 ```
 
 This creates `data/processed/crossmatch_catalog.csv` by querying Gaia DR3 and filtering for high-quality XP spectra.
@@ -105,13 +105,13 @@ Saved checkpoints are written to `results/models/pinn/`.
 
 ## Evaluation
 
-Evaluate saved models and generate comparison plots:
+Evaluation utilities are available under the experiment scripts in `src/experiments/metrics/` and can be run directly as Python modules. For example:
 
 ```bash
-python3 -m src.experiments.evaluate
+python3 -m src.experiments.metrics.comparative_table
 ```
 
-If the required checkpoint files are missing, `evaluate.py` can train fallback models temporarily and still produce metrics and plot output.
+These scripts generate comparison tables and diagnostic plots from saved model outputs or synthetic data.
 
 ## Key Scripts
 
@@ -121,11 +121,13 @@ If the required checkpoint files are missing, `evaluate.py` can train fallback m
 - `src/processing/extract_features.py` - extract Gaia scalar features for alternative training
 - `src/train/mains/train_baselines.py` - train classical baseline regressors
 - `src/train/mains/train_neural_net.py` - train the PINN model and evaluate on validation set
-- `src/experiments/evaluate.py` - compute metrics and save spectral comparison plots
+- `src/experiments/metrics/comparative_table.py` - compute metrics and save spectral comparison tables
+- `src/experiments/metrics/plot_residual_histogram.py` - plot residual histograms
+- `src/experiments/metrics/plot_metric_limitation_analysis.py` - analyze metric limitations
 
 ## Recent Repository Updates
 
-- Added missing dependencies to `requirements.txt`: `joblib`, `requests`
+- Added missing dependencies to `requirements.txt` and `pyproject.toml`, including `gaiaxpy`, `joblib`, and `requests`
 - Updated `.gitignore` to exclude generated outputs and checkpoints: `results/`, `*.joblib`, `*.pt`, `.pytest_cache/`, `*.log`
 - Enhanced `src/experiments/evaluate.py` with fallback dataset loading and temporary model training when checkpoint files are absent
 - Added compatibility alias in `src/models/neural_net.py` so legacy imports of `CalspecFluxMLP` still work

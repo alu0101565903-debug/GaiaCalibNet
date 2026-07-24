@@ -34,7 +34,7 @@ class SpectralRecalibrationMLP(nn.Module):
     - Output: Multiplicative correction vector mapped strictly to positive bounds via Softplus,
         yielding F_pred = F_Gaia_smoothed * Correction_Factor_smoothed.
     """
-    def __init__(self, input_dim=300, output_dim=300, hidden_dims=[256, 512, 256], 
+    def __init__(self, input_dim=300, output_dim=300, hidden_dims=[64, 32, 64], 
                  activation=nn.GELU(), dropout_rate=0.2, kernel_size=25):
         """
         Args:
@@ -49,7 +49,9 @@ class SpectralRecalibrationMLP(nn.Module):
         
         self.input_dim = input_dim
         self.output_dim = output_dim
+        
         self.kernel_size = kernel_size
+        assert self.kernel_size % 2 != 0, "kernel_size must be an odd number to maintain tensor dimensions."
 
         layers = []
         current_dim = input_dim
@@ -137,8 +139,13 @@ class SpectralRecalibrationMLP(nn.Module):
         
         # 1. INPUT SCALE NORMALIZATION: bring inputs close to O(1) to revive
         #    gradients in the linear layers and make learning numerically stable.
-        scale_factor = torch.mean(x, dim=1, keepdim=True) + 1e-12
-        x_scaled_for_mlp = x / scale_factor
+        if x.shape[1] == self.output_dim:
+            # Spectrum mode: normalize continuum by mean flux
+            scale_factor = torch.mean(x, dim=1, keepdim=True) + 1e-12
+            x_scaled_for_mlp = x / scale_factor
+        else:
+            # Features mode: already standardized by StandardScaler in training script
+            x_scaled_for_mlp = x
         
         if gaia_features is None:
             inputs = x_scaled_for_mlp
@@ -151,7 +158,6 @@ class SpectralRecalibrationMLP(nn.Module):
         # 3. Mode branching: spectrum mode vs feature mode.
         if x.shape[1] == raw_output.shape[1]:
             # === TRUE RESIDUAL SPECTRUM MODE ===
-            
             # Predict the unconstrained correction factor.
             # Apply the adjusted Softplus trick (-ln_2 + 1.0) so that when
             # raw_output is zero, the normalized correction equals 1.0 exactly.
