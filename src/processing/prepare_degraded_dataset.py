@@ -101,7 +101,7 @@ def fetch_gaia_xp_spectrum(
         fallback_y (np.ndarray): Degraded CALSPEC reference target vector.
 
     Returns:
-        np.ndarray: Gaia XP input spectrum vector (float32).
+        tuple[np.ndarray, np.ndarray]: Gaia XP input spectrum vector and error vector (float32).
     """
     valid_id = str(source_id).strip()
     if valid_id not in ["0", "", "nan", "None"]:
@@ -114,16 +114,19 @@ def fetch_gaia_xp_spectrum(
             )
             if calibrated_spectra is not None and not calibrated_spectra.empty:
                 x_flux = calibrated_spectra["flux"].iloc[0]
-                return np.array(x_flux, dtype=np.float32)
+                x_error = calibrated_spectra["flux_error"].iloc[0]
+                return np.array(x_flux, dtype=np.float32), np.array(x_error, dtype=np.float32)
         except Exception:
             pass  # Fall through to simulation if API request fails
 
     # Fallback simulation: apply instrumental baseline response shift and subtle noise
     tilt = np.linspace(0.96, 1.04, len(fallback_y), dtype=np.float32)
-    noise = np.random.normal(0.0, 0.005 * np.max(fallback_y), size=fallback_y.shape).astype(np.float32)
+    noise_std = 0.005 * np.max(fallback_y)
+    noise = np.random.normal(0.0, noise_std, size=fallback_y.shape).astype(np.float32)
     x_simulated = (fallback_y * tilt) + noise
-    
-    return np.maximum(x_simulated, 0.0)
+
+    x_error_simulated = np.full_like(x_simulated, noise_std, dtype=np.float32)
+    return np.maximum(x_simulated, 0.0), x_error_simulated
 
 
 def create_dataset(
@@ -131,8 +134,8 @@ def create_dataset(
     calspec_dir: str = "data/raw/calspec_fits",
     output_dir: str = "data/processed",
     n_channels: int = 300,
-    wave_min_nm: float = 330.0,
-    wave_max_nm: float = 1050.0,
+    wave_min_nm: float = 340.0,
+    wave_max_nm: float = 1000.0,
 ) -> None:
     """
     Main orchestration routine for generating and saving the regression dataset.
@@ -168,6 +171,7 @@ def create_dataset(
 
     X_list = []
     Y_list = []
+    X_error_list = []
     processed_stars = []
     processed_ids = []
 
@@ -202,10 +206,12 @@ def create_dataset(
             y_target = process_calspec_target(fits_full_path, wave_length_grid)
 
             # 2. Extract or simulate Input feature spectrum (X) from Gaia DR3
-            x_input = fetch_gaia_xp_spectrum(gaia_id, wave_length_grid, y_target)
+            x_input, x_error = fetch_gaia_xp_spectrum(gaia_id, wave_length_grid, y_target)
 
             X_list.append(x_input)
             Y_list.append(y_target)
+            X_error_list.append(x_error)
+
             processed_stars.append(star_name)
             processed_ids.append(gaia_id)
 
@@ -222,11 +228,13 @@ def create_dataset(
     # Convert arrays to PyTorch-compatible float32 matrices
     X = np.array(X_list, dtype=np.float32)
     Y = np.array(Y_list, dtype=np.float32)
+    X_error = np.array(X_error_list, dtype=np.float32)
 
     # Persist dataset to disk
     os.makedirs(abs_output_dir, exist_ok=True)
     np.save(os.path.join(abs_output_dir, "X.npy"), X)
     np.save(os.path.join(abs_output_dir, "Y.npy"), Y)
+    np.save(os.path.join(abs_output_dir, "X_error.npy"), X_error)
     np.save(os.path.join(abs_output_dir, "star_names.npy"), np.array(processed_stars))
     np.save(os.path.join(abs_output_dir, "gaia_source_ids.npy"), np.array(processed_ids))
     np.save(os.path.join(abs_output_dir, "wave_grid.npy"), wave_length_grid)
@@ -236,6 +244,7 @@ def create_dataset(
     print("=" * 60)
     print(f"Total Valid Targets Exported     : {len(processed_stars)}")
     print(f"Input Features Matrix Shape (X)  : {X.shape} (float32)")
+    print(f"Input Errors Matrix Shape (X_err): {X_error.shape} (float32)")
     print(f"Target Ground Truth Shape (Y)    : {Y.shape} (float32)")
     print(f"Wavelength Grid Storage Vector   : {wave_length_grid.shape} channels")
     print(f"Output Directory Location        : {abs_output_dir}")
