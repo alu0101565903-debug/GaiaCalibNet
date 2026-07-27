@@ -1,5 +1,8 @@
 """
-Module extension: Fetch and plot raw Gaia spectra directly from ESA Archive.
+Module: raw_gaia.py
+
+Description: Fetches and visualizes raw sampled BP/RP spectra directly from 
+the ESA Gaia Archive via Astroquery DataLink service.
 """
 
 from pathlib import Path
@@ -17,19 +20,14 @@ def plot_raw_gaia_server_spectrum(
     directly from the ESA Gaia DR3 archive using DataLink.
 
     Parameters
-    ----------
-    gaia_id : str or int
-        The unique Gaia Source ID (e.g., 5853498713190525696).
-    output_dir : str or Path, optional
-        Directory where the plot PNG will be saved if ax is None.
-    ax : matplotlib.axes.Axes, optional
-        Existing axis to plot on (for subplots or combined comparisons).
+    - gaia_id (str or int): The unique Gaia Source ID (e.g., 5853498713190525696).
+    - output_dir (str or Path, optional): Directory where the plot PNG will be saved if ax is None.
+    - ax (matplotlib.axes.Axes, optional): Existing axis to plot on (for subplots or combined comparisons).
 
     Returns
-    -------
-    bool
-        True if retrieval and plotting succeeded, False otherwise.
+    - bool: True if retrieval and plotting succeeded, False otherwise.
     """
+    # Sanitize and cast the Gaia Source ID
     clean_id = int(str(gaia_id).strip())
 
     print(f"   [+] Fetching raw spectrum for Gaia ID {clean_id} from ESA Gaia archive...")
@@ -43,6 +41,7 @@ def plot_raw_gaia_server_spectrum(
             format="csv",
         )
 
+        # Validate that the ESA archive returned a non-empty payload
         if not datalink or len(datalink) == 0:
             print(f"   [!] No spectral data found on ESA server for Gaia ID {clean_id}.")
             return False
@@ -54,7 +53,7 @@ def plot_raw_gaia_server_spectrum(
         wavelengths = spectrum_df["wavelength"]  # Wavelengths in nm directly from ESA
         fluxes = spectrum_df["flux"]              # Flux in W / (m² · nm)
 
-        # 3. Handle plot axis creation
+        # 3. Handle plot axis initialization
         save_and_close = False
         if ax is None:
             fig, ax = plt.subplots(figsize=(10, 5))
@@ -83,14 +82,14 @@ def plot_raw_gaia_server_spectrum(
                 label="Raw Gaia DR3 (ESA Server)",
             )
 
-        # 5. Apply standard formatting
+        # 5. Apply standard visualization formatting (using raw strings for LaTeX characters)
         ax.set_title(f"Raw ESA Gaia DR3 Spectrum | Source ID: {clean_id}", fontweight="bold", fontsize=12)
         ax.set_xlabel("Wavelength [nm]", fontsize=11)
         ax.set_ylabel("Flux [W / m² / nm]", fontsize=11)
         ax.grid(True, alpha=0.3, linestyle="--")
-        ax.legend(loc="upper right", frameon=True)
+        ax.legend(loc="best", frameon=True)
 
-        # 6. Save plot if running in standalone mode
+        # 6. Save and close figure if executing in standalone mode
         if save_and_close:
             plt.tight_layout()
             if output_dir:
