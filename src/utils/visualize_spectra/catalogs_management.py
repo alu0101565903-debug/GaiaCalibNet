@@ -12,11 +12,27 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 from astropy.io import fits
+import functools
 import warnings
 from astropy.utils.exceptions import AstropyWarning
 
 
+# ============================
 # 1. INTERNAL HELPERS
+# ============================
+
+def get_clean_filename(name: str) -> str:
+    """Standardizes string formatting for safe file saving."""
+    return str(name).strip().replace("/", "_").replace(" ", "_")
+
+def get_wavelength_grid(num_channels: int) -> np.ndarray:
+    """Centralizes the wavelength definition."""
+    return np.linspace(330, 1050, num_channels)
+
+@functools.lru_cache(maxsize=4)
+def _load_numpy_matrix(matrix_path: str | Path) -> np.ndarray:
+    """Internal cached helper to avoid re-reading binary matrix files in loops."""
+    return np.load(Path(matrix_path))
 
 def _load_catalog(catalog_path: str | Path) -> pd.DataFrame:
     """Internal helper to validate and load the CSV catalog."""
@@ -24,6 +40,44 @@ def _load_catalog(catalog_path: str | Path) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(f"Catalog file not found at: {path}")
     return pd.read_csv(path)
+
+def resolve_catalog_columns(df: pd.DataFrame):
+    """Returns the correct column names for ID and Name."""
+    name_col = "calspec_name" if "calspec_name" in df.columns else "Name"
+    id_col = "source_id" if "source_id" in df.columns else "gaia_source_id"
+    return id_col, name_col
+
+#def group_catalog_by_color(df: pd.DataFrame, color_column: str = "bp_rp"):
+    #"""Applies the standard BP-RP color bins to the catalog."""
+    #bins = [-np.inf, 0.5, 1.5, np.inf]
+    #labels = ["Blue (BP-RP < 0.5)", "Solar (0.5 <= BP-RP <= 1.5)", "Red (BP-RP > 1.5)"]
+    #df["Color_Group"] = pd.cut(df[color_column], bins=bins, labels=labels)
+    #return df, labels
+
+def group_catalog_by_color(df: pd.DataFrame, color_column: str = "bp_rp") -> tuple[pd.DataFrame, list[str]]:
+    """
+    Categorizes catalog stars into color groups, handling saturated stars (G < 6.0) 
+    and White Dwarfs, returning a modified copy and the label list.
+    """
+    df_out = df.copy()
+
+    bins = [-np.inf, 0.5, 1.5, np.inf]
+    labels = ["Blue (BP-RP < 0.5)", "Solar (0.5 <= BP-RP <= 1.5)", "Red (BP-RP > 1.5)"]
+    
+    # 1. Asignación inicial estándar por fotometría BP-RP
+    df_out["Color_Group"] = pd.cut(df_out[color_column], bins=bins, labels=labels).astype(str)
+
+    # 2. Corrección: Enanas Blancas (WD/GD/HZ/Feige/G191) siempre en grupo Azul
+    if "calspec_name" in df_out.columns:
+        wd_mask = df_out["calspec_name"].astype(str).str.lower().str.startswith(("wd", "gd", "hz", "feige", "g191"))
+        df_out.loc[wd_mask, "Color_Group"] = labels[0]
+
+    # 3. Corrección: Estrellas brillantes/saturadas con fotometría BP-RP falsa (ej. eta1dor -> Solar)
+    if "phot_g_mean_mag" in df_out.columns and "calspec_name" in df_out.columns:
+        saturated_bright = (df_out["phot_g_mean_mag"] < 6.0) & (df_out["calspec_name"].astype(str).str.lower() == "eta1dor")
+        df_out.loc[saturated_bright, "Color_Group"] = labels[1]
+
+    return df_out, labels
 
 def extract_fits_data(fits_path: Path):
     """Extracts and filters wavelength and flux from a FITS file."""
@@ -60,7 +114,7 @@ def _plot_spectrum_base(
     """Internal engine to plot spectra from processed matrix files (.npy)."""
     star_idx, gaia_id, calspec_name = resolve_star_info(identifier, catalog_path=catalog_path)
 
-    data = np.load(Path(matrix_path))
+    data = _load_numpy_matrix(str(matrix_path))
     if star_idx >= len(data):
         raise IndexError(f"Index {star_idx} out of bounds for matrix at {matrix_path}.")
 
