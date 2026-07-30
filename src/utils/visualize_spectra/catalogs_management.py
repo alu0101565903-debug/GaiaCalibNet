@@ -144,7 +144,9 @@ def _plot_spectrum_base(
 
         plt.close(fig)
 
+# =======================================
 # 2. ID EXTRACTION AND RESOLUTION
+# =======================================
 
 def get_gaia_ids(catalog_path: str | Path = "data/processed/crossmatch_catalog.csv"):
     """Extracts all Gaia Source IDs from the catalog."""
@@ -181,7 +183,9 @@ def resolve_star_info(identifier, catalog_path: str | Path = "data/processed/cro
 
     return star_idx, str(row[id_col]), str(row[name_col])
 
+# ===============================
 # 3. PUBLIC PLOTTING FUNCTIONS
+# ===============================
 
 def plot_gaia_spectrum(
     identifier,
