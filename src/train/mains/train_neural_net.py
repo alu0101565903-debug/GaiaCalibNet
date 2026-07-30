@@ -18,7 +18,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
 from src.models.neural_net import SpectralRecalibrationMLP
-from src.train.loss.losses import PhysicsInformedLoss, adaptive_physics_wrapper
+from src.train.loss.original_loss import PhysicsInformedLoss, adaptive_physics_wrapper
 from src.train.training_functions.adp_training_strategies import train_2stage_adaptive
 from src.utils.metrics.alternative_metrics import (
     calculate_band_errors,

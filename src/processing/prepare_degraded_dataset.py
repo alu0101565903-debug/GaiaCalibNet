@@ -130,9 +130,9 @@ def fetch_gaia_xp_spectrum(
 
 
 def create_dataset(
-    csv_path: str = "data/processed/crossmatch_catalog.csv",
+    csv_path: str = "data/processed/catalogs_by_color/solar_catalog.csv",
     calspec_dir: str = "data/raw/calspec_fits",
-    output_dir: str = "data/processed",
+    output_dir: str = "data/processed/nn/solar",
     n_channels: int = 300,
     wave_min_nm: float = 340.0,
     wave_max_nm: float = 1000.0,
