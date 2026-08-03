@@ -13,6 +13,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
+from GaiaXPcorrection.GaiaDR3XPspectracorrectionV1 import correction, correction_df
 
 def generate_plots_from_file(input_filepath: str, output_dir: str, num_samples: int = 5):
     """
@@ -52,8 +53,7 @@ def generate_plots_from_file(input_filepath: str, output_dir: str, num_samples: 
     X_orig = data["X_orig"]
     Y_ref = data["Y_ref"]
     X_pinn = data["X_pinn"]
-    X_baseline = data["X_baseline"]
-    poly_deg = data["poly_deg"]
+    X_huang = data["X_huang"] if "X_huang" in data else None
 
     os.makedirs(output_dir, exist_ok=True)
     samples_to_plot = min(num_samples, X_orig.shape[0])
@@ -61,6 +61,9 @@ def generate_plots_from_file(input_filepath: str, output_dir: str, num_samples: 
     print(f"\n[>] Generating {samples_to_plot} figures from the archive: {input_filepath}")
 
     for i in range(samples_to_plot):
+        has_baseline = True
+        X_huang_baseline = np.zeros_like(X_orig[i])
+
         fig, (ax1, ax2) = plt.subplots(
             2, 1, 
             figsize=(12, 8), 
@@ -71,7 +74,12 @@ def generate_plots_from_file(input_filepath: str, output_dir: str, num_samples: 
         # Top Panel: Absolute Flux
         ax1.plot(wave, Y_ref[i], label="CALSPEC Reference (Y)", color="black", alpha=0.85, linewidth=1.2)
         ax1.plot(wave, X_orig[i], label="Original Gaia BP/RP (X)", color="#4f88f3", alpha=0.6, linewidth=1.2)
-        ax1.plot(wave, X_baseline[i], label=f"Classical Baseline (Chebyshev deg={poly_deg})", color="#00cf49", alpha=0.9, linewidth=1.5, linestyle="--")
+        if X_huang is not None and np.any(X_huang[i] > 0):
+            ax1.plot(
+                wave, X_huang[i], 
+                label="Huang et al. 2024 Baseline", 
+                color="#00cf49", alpha=0.9, linewidth=1.5, linestyle="--"
+            )
         ax1.plot(wave, X_pinn[i], label="PINN Prediction (X * R)", color="#e63946", alpha=0.8, linewidth=1.5)
 
         ax1.set_title(f"Blind Test PINN vs Baseline | Star Index: {i:03d}")
@@ -83,12 +91,18 @@ def generate_plots_from_file(input_filepath: str, output_dir: str, num_samples: 
         # Aligned with Peak-Normalized MAE calculation
         peak_flux = np.max(Y_ref[i])
         res_original_pct = ((X_orig[i] - Y_ref[i]) / peak_flux) * 100.0
-        res_baseline_pct = ((X_baseline[i] - Y_ref[i]) / peak_flux) * 100.0
         res_pinn_pct = ((X_pinn[i] - Y_ref[i]) / peak_flux) * 100.0
 
         ax2.axhline(0.0, color="black", linestyle="-", linewidth=1.2, alpha=0.85)
         ax2.plot(wave, res_original_pct, label="Original Gaia Residual", color="#4f88f3", alpha=0.5, linewidth=1.0)
-        ax2.plot(wave, res_baseline_pct, label=f"Baseline Residual (deg={poly_deg})", color="#00cf49", alpha=0.8, linewidth=1.5, linestyle="--")
+
+        if X_huang is not None and np.any(X_huang[i] > 0):
+            res_baseline_pct = ((X_huang[i] - Y_ref[i]) / peak_flux) * 100.0
+            ax2.plot(
+                wave, res_baseline_pct, 
+                label="Huang Baseline Residual", 
+                color="#00cf49", alpha=0.8, linewidth=1.5, linestyle="--"
+            )
         ax2.plot(wave, res_pinn_pct, label="PINN Residual", color="#e63946", alpha=0.9, linewidth=1.5)
 
         ax2.set_xlabel("Wavelength [nm]")

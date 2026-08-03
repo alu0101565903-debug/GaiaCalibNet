@@ -56,7 +56,7 @@ def clean_target_name(name: str, prefix: str) -> list:
         "P177D": ["BD+25 4655"],
         "P041C": ["BD+20 5000"],
         "SNAP2": ["HD 107513"],
-        "KF06T1": ["BD+28 4211"], # Muchas KF son calibradores cruzados
+        "KF06T1": ["BD+28 4211"], # Many KF targets are cross-calibrators
         "C26202": ["HD 188350"],
         "ETA1DOR": ["eta Dor"]
     }
@@ -122,7 +122,7 @@ def process_single_star(prefix: str, files: list, base_url: str) -> dict:
     valid_files = [f for f in files if "mod" not in f.lower()]
     
     if not valid_files:
-        print(f"  [-]  {prefix}: Solo modelos teóricos (mod).")
+        print(f"  [-]  {prefix}: Only theoretical models (mod).")
         return None
         
     best_file = sorted(valid_files)[0]
@@ -130,7 +130,7 @@ def process_single_star(prefix: str, files: list, base_url: str) -> dict:
     try:
         url = base_url + best_file
         
-        # 1. Intentar Extensión 0 (Primary HDU)
+        # 1. Try Extension 0 (Primary HDU)
         header = fits.getheader(url, ext=0)
         ra_raw = get_fits_keyword(header, ["RA_TARG", "RA", "TARG_RA", "RA_OBJ", "OBJ_RA"])
         dec_raw = get_fits_keyword(header, ["DEC_TARG", "DEC", "TARG_DEC", "DEC_OBJ", "OBJ_DEC"])
@@ -138,19 +138,19 @@ def process_single_star(prefix: str, files: list, base_url: str) -> dict:
         
         ra, dec = parse_fits_coords(ra_raw, dec_raw)
         
-        # 2. Si falló la Extensión 0, intentar Extensión 1 de forma segura
+        # 2. If Extension 0 failed, try Extension 1 safely
         if ra is None or dec is None:
             try:
                 header_ext1 = fits.getheader(url, ext=1)
                 ra_raw1 = get_fits_keyword(header_ext1, ["RA_TARG", "RA", "TARG_RA", "CRVAL1"])
                 dec_raw1 = get_fits_keyword(header_ext1, ["DEC_TARG", "DEC", "TARG_DEC", "CRVAL2"])
-                # Importante: Volvemos a parsear las coordenadas leídas de ext=1
+                # Important: We parse the coordinates read from ext=1 again
                 ra, dec = parse_fits_coords(ra_raw1, dec_raw1)
             except Exception:
-                # Si el FITS no tiene extensión 1, ignoramos el fallo y continuamos a SIMBAD
+                # If the FITS file has no extension 1, we ignore the failure and continue to SIMBAD
                 pass
             
-        # 3. Si las cabeceras FITS no tenían coordenadas válidas, usar SIMBAD multi-candidato
+        # 3. If the FITS headers had no valid coordinates, use the multi-candidate SIMBAD fallback
         if ra is None or dec is None:
             candidates = clean_target_name(raw_name, prefix)
             ra, dec = get_coords_sesame(candidates)
@@ -176,7 +176,7 @@ def create_catalog(output_path: str):
     resolves coordinates, and dumps the raw consolidated metadata table.
     """
     print("=" * 60)
-    print("[4.1] SCRA-PARSING AND GENERATING BASE CALSPEC CATALOG")
+    print("[4.1] SCRAPING AND GENERATING THE BASE CALSPEC CATALOG")
     print("=" * 60)
     
     base_url = "https://archive.stsci.edu/hlsps/reference-atlases/cdbs/current_calspec/"

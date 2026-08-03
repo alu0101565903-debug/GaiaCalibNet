@@ -172,6 +172,7 @@ def create_dataset(
     X_list = []
     Y_list = []
     X_error_list = []
+    G_mags_list = []
     processed_stars = []
     processed_ids = []
 
@@ -179,6 +180,7 @@ def create_dataset(
         star_name = str(row.get("calspec_name", row.get("Name"))).strip()
         fits_filename = str(row.get("fits_file", row.get("File_Source"))).strip()
         gaia_id = str(row.get("gaia_source_id", "0")).strip()
+        g_mag = float(row.get("phot_g_mean_mag", 15.0))
 
         # Match target FITS filename (exact or case-insensitive)
         matched_filename = None
@@ -211,7 +213,7 @@ def create_dataset(
             X_list.append(x_input)
             Y_list.append(y_target)
             X_error_list.append(x_error)
-
+            G_mags_list.append(g_mag)
             processed_stars.append(star_name)
             processed_ids.append(gaia_id)
 
@@ -229,12 +231,14 @@ def create_dataset(
     X = np.array(X_list, dtype=np.float32)
     Y = np.array(Y_list, dtype=np.float32)
     X_error = np.array(X_error_list, dtype=np.float32)
+    G_mags = np.array(G_mags_list, dtype=np.float32)
 
     # Persist dataset to disk
     os.makedirs(abs_output_dir, exist_ok=True)
     np.save(os.path.join(abs_output_dir, "X.npy"), X)
     np.save(os.path.join(abs_output_dir, "Y.npy"), Y)
     np.save(os.path.join(abs_output_dir, "X_error.npy"), X_error)
+    np.save(os.path.join(abs_output_dir, "G_mags.npy"), G_mags)
     np.save(os.path.join(abs_output_dir, "star_names.npy"), np.array(processed_stars))
     np.save(os.path.join(abs_output_dir, "gaia_source_ids.npy"), np.array(processed_ids))
     np.save(os.path.join(abs_output_dir, "wave_grid.npy"), wave_length_grid)

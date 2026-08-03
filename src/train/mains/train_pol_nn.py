@@ -29,11 +29,10 @@ from src.utils.visualize_models_performance.plot_model_comparison import generat
 def run_training(
     x_path: str = "data/processed/X.npy",
     y_path: str = "data/processed/Y.npy",
-    x_err_path: str = "data/processed/X_error.npy",  
+    x_err_path: str = "data/processed/X_error.npy",
     output_model_dir: str = "results/models/pol_nn",
     test_size: float = 0.2,
     random_state: int = 42,
-    poly_deg: int = 5,
     epochs_adam: int = 5000,
     steps_lbfgs: int = 100,
     max_batch_size: int = 32
@@ -54,7 +53,6 @@ def run_training(
     - output_model_dir (str, optional): Directory to save the trained model and results. Defaults to "results/models/pol_nn".
     - test_size (float, optional): Proportion of the dataset to include in the blind test split. Defaults to 0.2.
     - random_state (int, optional): Random seed for reproducibility. Defaults to 42.
-    - poly_deg (int, optional): Degree of the Chebyshev polynomial used for baseline calculations. Defaults to 5.
     - epochs_adam (int, optional): Number of epochs for the initial Adam optimization stage. Defaults to 5000.
     - steps_lbfgs (int, optional): Number of optimization steps for the L-BFGS stage. Defaults to 100.
     - max_batch_size (int, optional): Maximum batch size for the DataLoader. Defaults to 32.
@@ -78,16 +76,20 @@ def run_training(
     X_err_np = np.load(x_err_path)
 
     # --- Train / Test Split ---
-    X_train_np, X_test_np, Y_train_np, Y_test_np, X_err_train_np, X_err_test_np = train_test_split(
-        X_np, Y_np, X_err_np, test_size=test_size, random_state=random_state
+    (
+        X_train_np, X_test_np, 
+        Y_train_np, Y_test_np, 
+        X_err_train_np, X_err_test_np
+    ) = train_test_split(
+        X_np, Y_np, X_err_np, 
+        test_size=test_size, random_state=random_state
     )
-    
+
     print(f"[>] Training samples: {X_train_np.shape[0]}")
     print(f"[>] Blind test samples: {X_test_np.shape[0]}")
 
     X_train_tensor = torch.tensor(X_train_np, dtype=torch.float32)
     Y_train_tensor = torch.tensor(Y_train_np, dtype=torch.float32)
-    
     dataset_train = TensorDataset(X_train_tensor, Y_train_tensor)
     batch_size = min(max_batch_size, len(dataset_train))
 
@@ -131,14 +133,13 @@ def run_training(
     X_test_tensor = torch.tensor(X_test_np, dtype=torch.float32).to(device)
     Y_test_tensor = torch.tensor(Y_test_np, dtype=torch.float32).to(device)
     X_err_test_tensor = torch.tensor(X_err_test_np, dtype=torch.float32).to(device)
-    
+
     export_test_predictions(
         model=trained_model,
         X_tensor=X_test_tensor,
         Y_tensor=Y_test_tensor,
         X_err_tensor=X_err_test_tensor,
         output_filepath=results_filepath,
-        poly_deg=poly_deg
     )
 
     # Return the results file path so it can be read by downstream scripts
@@ -151,55 +152,22 @@ if __name__ == "__main__":
     set_seed(42)
 
     # 1. Configure main directories
-    OUTPUT_MODEL_DIR = "results/models/pol_nn/all"
+    OUTPUT_MODEL_DIR = "results/models/pol_nn/blue"
     VIS_DIR = os.path.join(OUTPUT_MODEL_DIR, "comparison")
 
     # 2. Execute Phase 1: Training and Exporting
-    
     npz_results_path = run_training(
-        x_path="data/processed/X.npy",
-        y_path="data/processed/Y.npy",
-        x_err_path="data/processed/X_error.npy",  
+        x_path="data/processed/nn/blue/X.npy",
+        y_path="data/processed/nn/blue/Y.npy",
+        x_err_path="data/processed/nn/blue/X_error.npy",
         output_model_dir=OUTPUT_MODEL_DIR,
         test_size=0.2,
         random_state=42,
-        poly_deg=5,
         epochs_adam=2000,
         steps_lbfgs=100,
         max_batch_size=15
     )
 
-    
-    # Alternative configurations mapping specific bands (e.g., blue or solar)
-    """
-    npz_results_path = run_training(
-            x_path="data/processed/nn/blue/X.npy",
-            y_path="data/processed/nn/blue/Y.npy",
-            x_err_path="data/processed/nn/blue/X_error.npy",  
-            output_model_dir=OUTPUT_MODEL_DIR,
-            test_size=0.2,
-            random_state=42,
-            poly_deg=5,
-            epochs_adam=5000,
-            steps_lbfgs=100,
-            max_batch_size=15
-        )
-    """
-
-    """
-    npz_results_path = run_training(
-                x_path="data/processed/nn/solar/X.npy",
-                y_path="data/processed/nn/solar/Y.npy",
-                x_err_path="data/processed/nn/solar/X_error.npy",  
-                output_model_dir=OUTPUT_MODEL_DIR,
-                test_size=0.2,
-                random_state=42,
-                poly_deg=5,
-                epochs_adam=1000,
-                steps_lbfgs=100,
-                max_batch_size=15
-            )
-    """
     # 3. Execute Phase 2: Quantitative Evaluation (Reads the .npz file)
     evaluate_test_set_from_file(
         input_filepath=npz_results_path,
@@ -213,3 +181,4 @@ if __name__ == "__main__":
         output_dir=VIS_DIR,
         num_samples=18
     )
+

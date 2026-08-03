@@ -31,4 +31,4 @@ def print_full_npy(file_path: str | Path):
         print(f"Error reading the file: {e}")
 
 if __name__ == "__main__":
-    print_full_npy("data/processed/X_error.npy")
+    print_full_npy("data/processed/X_huang.npy")
