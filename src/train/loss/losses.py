@@ -13,7 +13,7 @@ from torch import nn
 
 class BiCubicPhysicsInformedLoss(nn.Module):
     """
-    Definitive Physics-Informed Loss for Spectral Recalibration.
+    Physics-Informed Loss for Spectral Recalibration.
     
     This loss function is designed to stably train a Physics-Informed Neural 
     Network (PINN) by incorporating the following mechanisms:
@@ -79,6 +79,64 @@ class BiCubicPhysicsInformedLoss(nn.Module):
         return total_loss, loss_flux, loss_smooth
 
 
+class PCAPhysicsInformedLoss(nn.Module):
+    """
+    Definitive physics-informed loss function for PCA-based spectral recalibration.
+    
+    Key features:
+    1. Relative Loss: Prevents vanishing gradients caused by the absolute flux scale (1e-14).
+    2. Pipeline Compatibility: Takes (model, x_input, y_target) and returns the 
+       (total_loss, loss_flux, loss_smooth) tuple required by `train_2stage_fixed`.
+    3. Frozen Buffers: Keeps `pca_basis` and `pca_mean` synchronized across CPU/GPU 
+       without updating them during backpropagation.
+    """
+    def __init__(self, pca_basis, pca_mean):
+        super(PCAPhysicsInformedLoss, self).__init__()
+        
+        # Convert to PyTorch tensors if they are numpy arrays
+        if not isinstance(pca_basis, torch.Tensor):
+            pca_basis = torch.tensor(pca_basis, dtype=torch.float32)
+        if not isinstance(pca_mean, torch.Tensor):
+            pca_mean = torch.tensor(pca_mean, dtype=torch.float32)
+            
+        # Register basis and mean as buffers (non-trainable parameters that move with the device)
+        self.register_buffer('pca_basis', pca_basis.float())
+        self.register_buffer('pca_mean', pca_mean.float())
+
+    def forward(self, model, x_input, y_target):
+        """
+        Args:
+        - model (nn.Module): The PCASpectralPINN model.
+        - x_input (torch.Tensor): Observed Gaia BP/RP spectra (batch_size, input_dim).
+        - y_target (torch.Tensor): CALSPEC reference spectra (batch_size, input_dim).
+            
+        Returns:
+        - tuple: (total_loss, loss_flux, loss_smooth)
+        """
+        # 1. Extract the predicted c_i coefficients from the network
+        pca_coeffs = model(x_input)
+        
+        # 2. Physical reconstruction of the correction curve: R(lambda) = Mean + sum(c_i * PC_i)
+        delta_R = torch.matmul(pca_coeffs, self.pca_basis)
+        R = self.pca_mean + delta_R
+        R = torch.clamp(R, min=0.3, max=3.0)
+        
+        # 3. Apply the multiplicative correction to the Gaia flux
+        calibrated_spec = x_input * R
+        
+        # 4. RELATIVE LOSS (Percentage Error)
+        # Normalize by y_target to make the error independent of the magnitude scale (~1e-14)
+        rel_error = (calibrated_spec - y_target) / (y_target + 1e-15)
+        loss_flux = torch.mean(rel_error ** 2)
+        
+        # 5. Dummy smoothness loss to maintain signature compatibility with the 2-stage pipeline
+        loss_smooth = torch.tensor(0.0, device=loss_flux.device)
+        
+        total_loss = loss_flux
+        
+        return total_loss, loss_flux, loss_smooth
+
+    
 class GaussianPhysicsInformedLoss(nn.Module):
     """
     Calculates three physically-motivated loss components on a relative scale.
@@ -134,7 +192,7 @@ class GaussianPhysicsInformedLoss(nn.Module):
         flux_calspec = torch.sum(Y, dim=1)
         loss_flux = torch.mean(((flux_calibrated - flux_calspec) / (flux_calspec + eps)) ** 2)
 
-        # Component C: Shape Preservation (Penalización de 1ra y 2da derivada)
+        # Component C: Shape Preservation (penalty on the 1st and 2nd derivatives)
         # 1. Penalize high-frequency noise (differences between adjacent pixels)
         d1_R = R_pred[:, 1:] - R_pred[:, :-1]
         loss_tv = torch.mean(torch.abs(d1_R)) # Use L1 (abs) or L2 (**2) norm

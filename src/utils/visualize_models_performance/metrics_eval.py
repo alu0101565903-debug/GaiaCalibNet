@@ -92,29 +92,31 @@ def evaluate_test_set_from_file(input_filepath: str, output_dir: str, num_knots:
     avg_red = band_metrics_accum["red"] / num_stars
 
     # --- 5. LaTeX Code Generation ---
+    # --- 5. LaTeX Code Generation ---
     latex_table = f"""
 \\begin{{table}}[htpb]
 \\centering
 \\caption{{Quantitative Evaluation Results of the PINN Model (Blind Test: {num_stars} stars)}}
 \\label{{tab:pinn_evaluation}}
-\\begin{{tabular}}{{lcc}}
+\\begin{{tabular}}{{lcll}}
 \\hline
-\\textbf{{Metric}} & \\textbf{{Value}} & \\textbf{{Unit}} \\\\
+\\textbf{{Metric}} & \\textbf{{Value}} & \\textbf{{Objective}} & \\textbf{{Utility}} \\\\
 \\hline
-Peak-Normalized MAE & {avg_pn_mae:.3f} & \\% \\\\
-Reduced $\\chi^2_\\nu$ & {avg_chi_sq:.3f} & - \\\\
-Normalized Bias (MBE) & {avg_bias:.3f} & \\% \\\\
-Cosine Similarity & {avg_cos_sim:.5f} & - \\\\
+Peak-Normalized MAE & {avg_pn_mae:.3f}\\% & 0.0\\% & Global precision independent of magnitude \\\\
+Reduced $\\chi^2_\\nu$ & {avg_chi_sq:.3f} & $\\approx 1.0$ & Statistical validity relative to noise $\\sigma_i$ \\\\
+Normalized Bias (MBE) & {avg_bias:.3f}\\% & 0.0\\% & Integrated photometric flux conservation \\\\
+Cosine Similarity & {avg_cos_sim:.5f} & 1.00000 & Macroscopic continuum morphological fidelity \\\\
 \\hline
-\\multicolumn{{3}}{{c}}{{\\textbf{{Relative Error by Band}}}} \\\\
+\\multicolumn{{4}}{{c}}{{\\textbf{{Relative Error by Band}}}} \\\\
 \\hline
-Blue Band (< 500 nm) & {avg_blue:.3f} & \\% \\\\
-Green Band (500 - 700 nm) & {avg_green:.3f} & \\% \\\\
-Red Band (> 700 nm) & {avg_red:.3f} & \\% \\\\
+Blue Band (< 500 nm) & {avg_blue:.3f}\\% & Minimum & Regional response in Gaia BP photometer \\\\
+Green Band (500 - 700 nm) & {avg_green:.3f}\\% & Minimum & Regional response in central optical band \\\\
+Red Band (> 700 nm) & {avg_red:.3f}\\% & Minimum & Regional response in Gaia RP photometer \\\\
 \\hline
 \\end{{tabular}}
 \\end{{table}}
 """
+    
     print("\n" + "="*60)
     print(" GENERATED EVALUATION TABLE (LATEX)")
     print("="*60)
@@ -130,31 +132,37 @@ Red Band (> 700 nm) & {avg_red:.3f} & \\% \\\\
         print(f"[✓] LaTeX file saved to: {latex_path}")
 
         # --- 6. PNG Image Generation with Matplotlib ---
-        fig, ax = plt.subplots(figsize=(8, 4))
+        fig, ax = plt.subplots(figsize=(14, 6))
         ax.axis("tight")
         ax.axis("off")
         
         table_data = [
-            ["Peak-Normalized MAE", f"{avg_pn_mae:.3f}", "%"],
-            ["Reduced Chi-Square", f"{avg_chi_sq:.3f}", "-"],
-            ["Normalized Bias (MBE)", f"{avg_bias:.3f}", "%"],
-            ["Cosine Similarity", f"{avg_cos_sim:.5f}", "-"],
-            ["Blue Band (< 500 nm)", f"{avg_blue:.3f}", "%"],
-            ["Green Band (500 - 700 nm)", f"{avg_green:.3f}", "%"],
-            ["Red Band (> 700 nm)", f"{avg_red:.3f}", "%"]
+            ["Peak-Normalized MAE", f"{avg_pn_mae:.3f}%", "0.0%", "Global precision independent of magnitude"],
+            ["Reduced Chi-Square", f"{avg_chi_sq:.3f}", "~1.0", "Statistical validity relative to noise"],
+            ["Normalized Bias (MBE)", f"{avg_bias:.3f}%", "0.0%", "Integrated photometric flux conservation"],
+            ["Cosine Similarity", f"{avg_cos_sim:.5f}", "1.00000", "Macroscopic continuum morphological fidelity"],
+            ["Blue Band (< 500 nm)", f"{avg_blue:.3f}%", "Minimum", "Regional response in Gaia BP photometer"],
+            ["Green Band (500 - 700 nm)", f"{avg_green:.3f}%", "Minimum", "Regional response in central optical band"],
+            ["Red Band (> 700 nm)", f"{avg_red:.3f}%", "Minimum", "Regional response in Gaia RP photometer"]
         ]
-        columns = ["Metric", "Value", "Unit"]
+        columns = ["Metric", "Value", "Objective", "Utility"]
+        col_widths = [0.22, 0.10, 0.10, 0.58]
         
         table = ax.table(
             cellText=table_data,
             colLabels=columns,
-            cellLoc="center",
+            colWidths=col_widths,
+            cellLoc="left",
             loc="center"
         )
-        
+
+        for i in range(len(table_data) + 1):
+            table[(i, 1)].set_text_props(ha="center")
+            table[(i, 2)].set_text_props(ha="center")
+
         table.auto_set_font_size(False)
-        table.set_fontsize(12)
-        table.scale(1.2, 1.5) 
+        table.set_fontsize(9.5)
+        table.scale(1.0, 2) 
 
         plt.title(f"Quantitative Evaluation of the PINN Model (Blind Test: {num_stars} stars)", 
                   fontsize=14, fontweight="bold", pad=20)

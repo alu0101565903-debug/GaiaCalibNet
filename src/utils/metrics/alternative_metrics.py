@@ -42,8 +42,10 @@ def calculate_peak_normalized_mae(y_true: np.ndarray, y_pred: np.ndarray) -> flo
         float: Peak-normalized MAE expressed as a percentage (%).
     """
     peak_flux = np.max(np.abs(y_true))
+    print(f"Peak flux: {peak_flux}")
     if peak_flux < 1e-12:
         return 0.0
+    
     
     mae_absolute = np.mean(np.abs(y_true - y_pred))
     return float((mae_absolute / peak_flux) * 100.0)

@@ -1,27 +1,28 @@
 # IAC_GAIA
 
-A spectral recalibration pipeline for Gaia DR3 and CALSPEC data. This repository supports data crossmatching, CALSPEC FITS download and processing, dataset generation, classical baseline training, physics-informed neural network (PINN) training, and model evaluation.
+A spectral recalibration pipeline for Gaia DR3 and CALSPEC data. The project combines catalog construction, Gaia/CALSPEC crossmatching, dataset preparation, baseline regression training, and physics-informed neural network (PINN) experiments for spectral correction.
 
 ## Repository Structure
 
 - `data/`
-  - `raw/` - raw input files, including CALSPEC FITS and initial catalogs
-  - `processed/` - processed dataset artifacts (`X.npy`, `Y.npy`, `star_names.npy`, `crossmatch_catalog.csv`, `X_features.npy`)
+  - `raw/` - raw inputs such as CALSPEC FITS files and source catalogs
+  - `processed/` - processed data artifacts such as spectra matrices, labels, and crossmatch outputs
+- `GaiaXPcorrection/` - reference correction utilities and supporting files
 - `results/`
-  - `models/` - saved model checkpoints for baselines and PINN
-  - `plots/` - evaluation plots and visualizations
+  - `models/` - saved checkpoints and trained models
+  - `plots/` - figures and diagnostic outputs
 - `src/`
-  - `processing/` - data preparation and feature extraction
-  - `train/` - training code for PINN and baseline models
-  - `models/` - neural network and baseline model definitions
+  - `processing/` - catalog generation, crossmatching, downloads, and dataset preparation
+  - `train/` - training entry points and training utilities
+  - `models/` - baseline and PINN model implementations
   - `experiments/` - evaluation and experiment scripts
-  - `utils/` - plotting utilities and spectra helpers
+  - `utils/` - plotting and spectral helper utilities
 - `requirements.txt` - Python dependencies
-- `report/` - project report files and LaTeX sources
+- `report/` - LaTeX report and supporting files
 
 ## Setup
 
-Recommended environment setup:
+Create and activate a virtual environment, then install the dependencies:
 
 ```bash
 cd /home/yaiza/IAC_GAIA
@@ -30,137 +31,126 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Basic Workflow
+## Typical Workflow
 
-### 1. Cross-match CALSPEC with Gaia DR3
+### 1. Build the base CALSPEC catalog
 
-Generate the processed crossmatch catalog from the CALSPEC source list:
+Generate the initial CALSPEC catalog from the remote STScI index:
+
+```bash
+python3 -m src.processing.create_catalog
+```
+
+This writes the raw catalog to `data/raw/calspec_catalog.csv`.
+
+### 2. Cross-match CALSPEC targets with Gaia DR3
+
+Create the Gaia/CALSPEC crossmatch catalog:
 
 ```bash
 python3 -m src.processing.crossmatch
 ```
 
-This creates `data/processed/crossmatch_catalog.csv` by querying Gaia DR3 and filtering for high-quality XP spectra.
+This produces `data/processed/crossmatch_catalog.csv`.
 
-### 2. Download missing CALSPEC FITS files
+### 3. Download CALSPEC FITS files
 
-Fetch the required CALSPEC FITS files referenced by the catalog:
+Download the required CALSPEC FITS spectra referenced by the catalog:
 
 ```bash
 python3 -m src.processing.download_calspec
 ```
 
-Downloaded FITS files are saved under `data/raw/calspec_fits/`.
+Files are stored under `data/raw/calspec_fits/`.
 
-### 3. Prepare the regression dataset
+### 4. Prepare the regression datasets
 
-Build the spectral dataset matrices and save them as NumPy binaries:
+Prepare the degraded or mock datasets used for training and evaluation:
 
 ```bash
-python3 -m src.processing.prepare_dataset
+python3 -m src.processing.prepare_degraded_dataset
 ```
 
-This generates:
+or
 
-- `data/processed/X.npy` - input spectra or feature matrices
-- `data/processed/Y.npy` - target normalized flux spectra
-- `data/processed/star_names.npy` - sample names
+```bash
+python3 -m src.processing.prepare_mock_dataset
+```
 
-### 4. Extract Gaia scalar features (optional)
+These scripts generate the processed arrays used by the training pipeline.
 
-If you want the feature-based training branch, extract the five Gaia scalar features:
+### 5. Extract Gaia scalar features (optional)
+
+If you want the feature-based branch, run:
 
 ```bash
 python3 -m src.processing.extract_features
 ```
 
-This creates `data/processed/X_features.npy`.
+This creates `data/processed/X_features.npy` when the feature extraction pipeline is available.
 
 ## Training
 
-### Classical baseline models
+### Classical baselines
 
-Train and evaluate Ridge, Random Forest, and SVR baselines:
+Train and evaluate baseline models:
 
 ```bash
 python3 -m src.train.mains.train_baselines
 ```
 
-Results are stored in `results/models/baselines/`.
+### PINN and related neural models
 
-### Physics-Informed Neural Network (PINN)
-
-Train the PINN model using the preprocessed data:
+Several training entry points are available under `src/train/mains/`:
 
 ```bash
 python3 -m src.train.mains.train_neural_net
+python3 -m src.train.mains.train_pca_nn
+python3 -m src.train.mains.train_pol_nn
+python3 -m src.train.mains.train_simplified_nn
 ```
 
-This script supports two modes:
+Outputs are written under `results/models/`.
 
-- `spectrum` - uses `data/processed/X.npy` and `data/processed/Y.npy`
-- `features` - uses `data/processed/X_features.npy` and `data/processed/Y.npy`
+## Evaluation and Visualization
 
-Saved checkpoints are written to `results/models/pinn/`.
-
-## Evaluation
-
-Evaluation utilities are available under the experiment scripts in `src/experiments/metrics/` and can be run directly as Python modules. For example:
-
-```bash
-python3 -m src.experiments.metrics.comparative_table
-```
-
-These scripts generate comparison tables and diagnostic plots from saved model outputs or synthetic data.
+The repository includes utilities for plotting and inspecting spectra and model outputs. Examples are available through the scripts in `src/experiments/` and `src/utils/visualize_spectra/`.
 
 ## Key Scripts
 
-- `src/processing/crossmatch_wd.py` - crossmatch CALSPEC targets to Gaia DR3
+- `src/processing/create_catalog.py` - build the base CALSPEC catalog
+- `src/processing/crossmatch.py` - crossmatch CALSPEC objects with Gaia DR3
 - `src/processing/download_calspec.py` - download CALSPEC FITS spectra
-- `src/processing/prepare_dataset.py` - produce `X.npy`, `Y.npy`, and normalized targets
+- `src/processing/prepare_degraded_dataset.py` - prepare degraded spectral datasets
+- `src/processing/prepare_mock_dataset.py` - prepare mock datasets for experimentation
 - `src/processing/extract_features.py` - extract Gaia scalar features for alternative training
-- `src/train/mains/train_baselines.py` - train classical baseline regressors
-- `src/train/mains/train_neural_net.py` - train the PINN model and evaluate on validation set
-- `src/experiments/metrics/comparative_table.py` - compute metrics and save spectral comparison tables
-- `src/experiments/metrics/plot_residual_histogram.py` - plot residual histograms
-- `src/experiments/metrics/plot_metric_limitation_analysis.py` - analyze metric limitations
+- `src/train/mains/train_baselines.py` - train classical regressors
+- `src/train/mains/train_neural_net.py` - train neural network variants
+- `src/train/mains/train_pca_nn.py` - PCA-based neural training entry point
+- `src/train/mains/train_pol_nn.py` - polynomial-neural training entry point
+- `src/train/mains/train_simplified_nn.py` - simplified neural training entry point
 
-## Recent Repository Updates
+## Recent Updates
 
-- Added missing dependencies to `requirements.txt` and `pyproject.toml`, including `gaiaxpy`, `joblib`, and `requests`
-- Updated `.gitignore` to exclude generated outputs and checkpoints: `results/`, `*.joblib`, `*.pt`, `.pytest_cache/`, `*.log`
-- Enhanced `src/experiments/evaluate.py` with fallback dataset loading and temporary model training when checkpoint files are absent
-- Added compatibility alias in `src/models/neural_net.py` so legacy imports of `CalspecFluxMLP` still work
+- The requested source modules now have English comments and docstrings for better readability.
+- The processing pipeline includes catalog generation, Gaia crossmatching, and dataset preparation entry points.
+- The repository keeps generated artifacts and checkpoints under `data/processed/` and `results/`.
 
 ## Notes
 
-- The repository assumes `data/raw/calspec_fits/` contains the target `.fits` files referenced by the processed crossmatch catalog.
-- The processing pipeline normalizes spectra using trapezoidal integration and aligns all spectra on a common wavelength grid.
-- The neural model architecture is implemented in `src/models/neural_net.py`, and baseline regressors are defined in `src/models/baselines.py`.
-
-## Requirements
-
-Install dependencies from `requirements.txt`.
-
-```bash
-pip install -r requirements.txt
-```
-
-## Troubleshooting
-
-- If a required dataset file is missing, verify the outputs of the processing scripts in `data/processed/`.
-- If model weights are not available, run the training scripts before evaluation.
-- Use the active Python virtual environment to ensure imports resolve correctly.
+- The workflow assumes that the required CALSPEC FITS files are available under `data/raw/calspec_fits/`.
+- The pipeline uses a common wavelength grid and normalized spectral representations for training.
+- Model implementations are defined in `src/models/` and training logic is organized under `src/train/`.
 
 ## Testing
 
-A lightweight import test is included to verify that core modules can be loaded successfully.
+A lightweight import smoke test is available:
 
 ```bash
 python3 -m pytest
 ```
 
-If you want to run only the smoke test for import sanity, use:
+You can target the import test directly with:
 
 ```bash
 python3 -m pytest tests/test_imports.py

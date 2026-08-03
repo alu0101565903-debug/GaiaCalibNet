@@ -9,6 +9,7 @@ Description:
 
 import numpy as np
 import pandas as pd
+import re
 import matplotlib.pyplot as plt
 from pathlib import Path
 from astropy.io import fits
@@ -50,34 +51,49 @@ def resolve_catalog_columns(df: pd.DataFrame):
 #def group_catalog_by_color(df: pd.DataFrame, color_column: str = "bp_rp"):
     #"""Applies the standard BP-RP color bins to the catalog."""
     #bins = [-np.inf, 0.5, 1.5, np.inf]
-    #labels = ["Blue (BP-RP < 0.5)", "Solar (0.5 <= BP-RP <= 1.5)", "Red (BP-RP > 1.5)"]
-    #df["Color_Group"] = pd.cut(df[color_column], bins=bins, labels=labels)
-    #return df, labels
+    #labels = ["Blue (BP-RP < 0.5)", "Solar (0.5 <= BP-RP < 1.5)", "Red (BP-RP >= 1.5)"]
+    #df_result = df.copy()
+    #df_result["Color_Group"] = pd.cut(df[color_column], bins=bins, labels=labels)
+    #return df_results, labels
 
-def group_catalog_by_color(df: pd.DataFrame, color_column: str = "bp_rp") -> tuple[pd.DataFrame, list[str]]:
+def group_catalog_by_color(
+    df: pd.DataFrame,
+    color_column: str = "bp_rp",
+) -> tuple[pd.DataFrame, list[str]]:
     """
-    Categorizes catalog stars into color groups, handling saturated stars (G < 6.0) 
-    and White Dwarfs, returning a modified copy and the label list.
+    Classifies stars into 'Blue', 'Solar', or 'Red' categories based strictly
+    on the Gaia photometric color index (bp_rp).
+
+    Args:
+    - df (pd.DataFrame): The original master catalog containing a 'bp_rp' column.
+
+    Returns:
+    - tuple: A copy of the DataFrame with a new 'Color_Group' column,
+      and the list of category labels.
     """
-    df_out = df.copy()
+    if "bp_rp" not in df.columns:
+        raise KeyError("The 'bp_rp' column was not found in the catalog. It is required for classification.")
 
-    bins = [-np.inf, 0.5, 1.5, np.inf]
-    labels = ["Blue (BP-RP < 0.5)", "Solar (0.5 <= BP-RP <= 1.5)", "Red (BP-RP > 1.5)"]
-    
-    # 1. Asignación inicial estándar por fotometría BP-RP
-    df_out["Color_Group"] = pd.cut(df_out[color_column], bins=bins, labels=labels).astype(str)
+    df_classified = df.copy()
 
-    # 2. Corrección: Enanas Blancas (WD/GD/HZ/Feige/G191) siempre en grupo Azul
-    if "calspec_name" in df_out.columns:
-        wd_mask = df_out["calspec_name"].astype(str).str.lower().str.startswith(("wd", "gd", "hz", "feige", "g191"))
-        df_out.loc[wd_mask, "Color_Group"] = labels[0]
+    # Define the color-group thresholds for the color index
+    conditions = [
+        df_classified["bp_rp"] <= 0.05,
+        (df_classified["bp_rp"] > 0.05) & (df_classified["bp_rp"] <= 1.1),
+        df_classified["bp_rp"] > 1.1
+    ]
 
-    # 3. Corrección: Estrellas brillantes/saturadas con fotometría BP-RP falsa (ej. eta1dor -> Solar)
-    if "phot_g_mean_mag" in df_out.columns and "calspec_name" in df_out.columns:
-        saturated_bright = (df_out["phot_g_mean_mag"] < 6.0) & (df_out["calspec_name"].astype(str).str.lower() == "eta1dor")
-        df_out.loc[saturated_bright, "Color_Group"] = labels[1]
+    labels = ["Blue", "Solar", "Red"]
 
-    return df_out, labels
+    # Assign the color group based on the defined conditions
+    df_classified["Color_Group"] = np.select(conditions, labels, default="Unknown")
+
+    # Manage nule values and false classifications
+    unknown_count = (df_classified["Color_Group"] == "Unknown").sum()
+    if unknown_count > 0:
+        print(f"[!] Warning: {unknown_count} stars could not be classified (possible null or NaN bp_rp values).")
+        
+    return df_classified, labels
 
 def extract_fits_data(fits_path: Path):
     """Extracts and filters wavelength and flux from a FITS file."""

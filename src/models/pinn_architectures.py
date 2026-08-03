@@ -23,9 +23,6 @@ class BaseSpectralPINN(nn.Module):
     """
     pass
 
-# =====================================================================
-# 1. PINN MODEL ARCHITECTURE (CONTROL KNOTS + BICUBIC INTERPOLATION)
-# =====================================================================
 class BiCubicSpectralPINN(BaseSpectralPINN):
     """
     Physics-Informed Neural Network based on Control Knots and Cubic Interpolation.
@@ -116,7 +113,87 @@ class BiCubicSpectralPINN(BaseSpectralPINN):
         self.eval()
 
 
-class GaussianSpectralPINN(nn.Module):
+class PCASpectralPINN(nn.Module):
+    """
+    PCA-based Physics-Informed Neural Network.
+    
+    This network predicts ONLY the PCA coefficients (c_i) for a given input 
+    spectrum, functioning equivalently to a polynomial coefficient predictor.
+    """
+    def __init__(self, input_dim, pca_basis, pca_mean=None):
+        """
+        Args:
+        - input_dim (int): Number of pixels/wavelengths (e.g., 343).
+        - pca_basis (Tensor or ndarray): PCA basis of shape (num_components, input_dim).
+        - pca_mean (Tensor or ndarray, optional): PCA mean of shape (input_dim,).
+        """
+        super(PCASpectralPINN, self).__init__()
+        self.input_dim = input_dim
+        
+        # Save the PCA basis as a frozen buffer
+        if not isinstance(pca_basis, torch.Tensor):
+            pca_basis = torch.tensor(pca_basis, dtype=torch.float32)
+        self.register_buffer('pca_basis', pca_basis.float())
+        self.num_components = self.pca_basis.shape[0]
+
+        # Save the PCA mean as a buffer
+        if pca_mean is None:
+            pca_mean = torch.ones(input_dim, dtype=torch.float32)
+        elif not isinstance(pca_mean, torch.Tensor):
+            pca_mean = torch.tensor(pca_mean, dtype=torch.float32)
+        self.register_buffer('pca_mean', pca_mean.float())
+        
+        # Network in charge of predicting only the c_i (output = num_components)
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.SiLU(),
+            nn.Linear(128, 64),
+            nn.SiLU(),
+            nn.Linear(64, self.num_components)
+        )
+
+        # Zero initialization: at the start of training, the network predicts c_i = 0
+        nn.init.zeros_(self.net[-1].weight)
+        nn.init.zeros_(self.net[-1].bias)
+
+    def forward(self, x):
+        """
+        Args:
+        - x (torch.Tensor): Input spectra (batch_size, input_dim).
+
+        Returns:
+        - torch.Tensor: Predicted c_i coefficients (batch_size, num_components).
+        """
+        # Normalization by the maximum flux per star for stability
+        max_val = torch.max(x, dim=1, keepdim=True)[0] + 1e-15
+        x_norm = x / max_val
+        
+        return self.net(x_norm)
+
+    def reconstruct(self, pca_coeffs):
+        """
+        Reconstructs the R(lambda) curve from the predicted coefficients.
+        Useful for evaluation and inference outside the loss function.
+        
+        Args:
+        - pca_coeffs (torch.Tensor): Coefficients (batch_size, num_components).
+            
+        Returns:
+        - torch.Tensor: R correction factors (batch_size, input_dim).
+        """
+        delta_R = torch.matmul(pca_coeffs, self.pca_basis)
+        R = self.pca_mean + delta_R
+        return torch.clamp(R, min=0.3, max=3.0)
+
+    def prepare_for_lbfgs(self):
+        """
+        Prepares the model for the L-BFGS optimization phase.
+        Sets the network to evaluation mode to stabilize normalization layers 
+        and prevent unwanted stochastic behaviors during line searches.
+        """
+        self.eval()
+
+class GaussianSpectralPINN(BaseSpectralPINN):
     """
     Residual PINN architecture utilizing an internal 1D Gaussian filter.
 

@@ -23,7 +23,7 @@ from src.train.training_functions.adp_training_strategies import train_2stage_ad
 from src.utils.metrics.alternative_metrics import (
     calculate_band_errors,
     calculate_mape,
-    calculate_pseudo_chi_square,
+    calculate_reduced_chi_square,
 )
 
 
@@ -194,11 +194,11 @@ def train_network(mode: str = "spectrum"):
 
     # Compute alternative domain-specific metrics
     mape = calculate_mape(Y_test_flat, Y_pred_flat)
-    chi2 = calculate_pseudo_chi_square(Y_test_flat, Y_pred_flat)
+    chi2 = calculate_reduced_chi_square(Y_test_flat, Y_pred_flat)
     band_errs = calculate_band_errors(wave_flat, Y_test_flat, Y_pred_flat)
 
     print(f"    -> Final MAPE (%)             : {mape:.4f}%")
-    print(f"    -> Final Pseudo Chi-Square    : {chi2:.4e}")
+    print(f"    -> Final Reduced Chi-Square    : {chi2:.4e}")
     print(f"    -> MAE Blue Band (<500nm)     : {band_errs['blue']:.4e}")
     print(f"    -> MAE Green Band (500-700nm) : {band_errs['green']:.4e}")
     print(f"    -> MAE Red Band (>700nm)      : {band_errs['red']:.4e}\n")
