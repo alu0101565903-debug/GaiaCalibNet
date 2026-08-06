@@ -56,45 +56,6 @@ def resolve_catalog_columns(df: pd.DataFrame):
     #df_result["Color_Group"] = pd.cut(df[color_column], bins=bins, labels=labels)
     #return df_results, labels
 
-def group_catalog_by_color(
-    df: pd.DataFrame,
-    color_column: str = "bp_rp",
-) -> tuple[pd.DataFrame, list[str]]:
-    """
-    Classifies stars into 'Blue', 'Solar', or 'Red' categories based strictly
-    on the Gaia photometric color index (bp_rp).
-
-    Args:
-    - df (pd.DataFrame): The original master catalog containing a 'bp_rp' column.
-
-    Returns:
-    - tuple: A copy of the DataFrame with a new 'Color_Group' column,
-      and the list of category labels.
-    """
-    if "bp_rp" not in df.columns:
-        raise KeyError("The 'bp_rp' column was not found in the catalog. It is required for classification.")
-
-    df_classified = df.copy()
-
-    # Define the color-group thresholds for the color index
-    conditions = [
-        df_classified["bp_rp"] <= 0.05,
-        (df_classified["bp_rp"] > 0.05) & (df_classified["bp_rp"] <= 1.1),
-        df_classified["bp_rp"] > 1.1
-    ]
-
-    labels = ["Blue", "Solar", "Red"]
-
-    # Assign the color group based on the defined conditions
-    df_classified["Color_Group"] = np.select(conditions, labels, default="Unknown")
-
-    # Manage nule values and false classifications
-    unknown_count = (df_classified["Color_Group"] == "Unknown").sum()
-    if unknown_count > 0:
-        print(f"[!] Warning: {unknown_count} stars could not be classified (possible null or NaN bp_rp values).")
-        
-    return df_classified, labels
-
 def extract_fits_data(fits_path: Path):
     """Extracts and filters wavelength and flux from a FITS file."""
     with warnings.catch_warnings():

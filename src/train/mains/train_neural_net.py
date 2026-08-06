@@ -70,6 +70,7 @@ def train_network(mode: str = "spectrum"):
     )
     X_train, X_test, Y_train, Y_test = splits[:4]
     Sigma_train = splits[4] if has_sigma else None
+    Sigma_test = splits[5] if has_sigma else None
 
     # 3. Data Scaling & Normalization
     # Physical scaling: normalize target fluxes by the maximum absolute training flux.
@@ -91,6 +92,7 @@ def train_network(mode: str = "spectrum"):
     Y_train_scaled = Y_train / Y_max
     # Mathematical scaling: variances scale with the square of the flux scale.
     Sigma_train_scaled = Sigma_train / (Y_max**2) if has_sigma else None
+    Sigma_test_flat = Sigma_test.flatten() if Sigma_test is not None else None
 
     # 4. Device and Model Setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -194,14 +196,18 @@ def train_network(mode: str = "spectrum"):
 
     # Compute alternative domain-specific metrics
     mape = calculate_mape(Y_test_flat, Y_pred_flat)
-    chi2 = calculate_reduced_chi_square(Y_test_flat, Y_pred_flat)
+    chi2 = calculate_reduced_chi_square(
+        Y_test_flat,
+        Y_pred_flat,
+        Sigma_test_flat if Sigma_test_flat is not None else np.ones_like(Y_test_flat) * 1e-4,
+    )
     band_errs = calculate_band_errors(wave_flat, Y_test_flat, Y_pred_flat)
 
     print(f"    -> Final MAPE (%)             : {mape:.4f}%")
     print(f"    -> Final Reduced Chi-Square    : {chi2:.4e}")
-    print(f"    -> MAE Blue Band (<500nm)     : {band_errs['blue']:.4e}")
-    print(f"    -> MAE Green Band (500-700nm) : {band_errs['green']:.4e}")
-    print(f"    -> MAE Red Band (>700nm)      : {band_errs['red']:.4e}\n")
+    print(f"    -> MAE Blue Band (<500nm)     : {band_errs['blue_mae']:.4e}")
+    print(f"    -> MAE Green Band (500-700nm) : {band_errs['green_mae']:.4e}")
+    print(f"    -> MAE Red Band (>700nm)      : {band_errs['red_mae']:.4e}\n")
     print("=" * 60 + "\n")
 
 

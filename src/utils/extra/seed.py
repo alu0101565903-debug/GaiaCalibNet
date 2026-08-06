@@ -25,11 +25,11 @@ def set_seed(seed: int = 42):
     and identically repeatable results, which is critical for scientific validation.
 
     Args:
-        seed (int, optional): The integer value to use as the global random seed. 
-            Defaults to 42.
+    - seed (int, optional): The integer value to use as the global random seed. 
+        Defaults to 42.
 
     Returns:
-        None: This function does not return any value. It directly modifies 
+    - None: This function does not return any value. It directly modifies 
         the global state of the random number generators.
     """
     # 1. Environment variables (Must be configured BEFORE initializing CUDA operations)

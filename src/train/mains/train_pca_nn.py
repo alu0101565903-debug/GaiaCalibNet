@@ -206,7 +206,7 @@ def run_training(
 if __name__ == "__main__":
     set_seed(42)
 
-    mode = "solar"  # change to "blue" for the blue set, or "solar" for the solar set
+    mode = "all"  # change to "blue" for the blue set, or "solar" for the solar set
 
     # 1. Configure main directories
     OUTPUT_MODEL_DIR = f"results/models/pca_nn/{mode}"
@@ -214,14 +214,14 @@ if __name__ == "__main__":
 
     # 2. Execute Phase 1: Training and Exporting
     npz_results_path = run_training(
-        x_path="data/processed/nn/solar/X.npy",
-        y_path="data/processed/nn/solar/Y.npy",
-        x_err_path="data/processed/nn/solar/X_error.npy",   
+        x_path=f"data/processed/nn/{mode}/X.npy",
+        y_path=f"data/processed/nn/{mode}/Y.npy",
+        x_err_path=f"data/processed/nn/{mode}/X_error.npy",   
         output_model_dir=OUTPUT_MODEL_DIR,
         test_size=0.2,
         random_state=42,
         num_components=10,
-        epochs_adam=5000,
+        epochs_adam=1000,
         steps_lbfgs=100,
         max_batch_size=15
     )
