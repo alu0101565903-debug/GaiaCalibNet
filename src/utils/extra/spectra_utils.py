@@ -1,4 +1,7 @@
 """
+Module: spectra_utils.py
+Report Section:
+
 Spectra Utilities for Resolution Degradation and Interpolation.
 
 This module provides physical and mathematical tools to process astronomical 
@@ -8,7 +11,6 @@ and cubic spline interpolation onto a common wavelength grid.
 
 import numpy as np
 from scipy.interpolate import CubicSpline
-from typing import Tuple
 
 def gaussian_kernel_convolution(wavelengths: np.ndarray, flux: np.ndarray, fwhm_nm: float) -> np.ndarray:
     """

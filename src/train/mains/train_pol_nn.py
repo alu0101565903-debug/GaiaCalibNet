@@ -151,19 +151,21 @@ def run_training(
 if __name__ == "__main__":
     set_seed(42)
 
+    mode = "solar"
+
     # 1. Configure main directories
-    OUTPUT_MODEL_DIR = "results/models/pol_nn/blue"
+    OUTPUT_MODEL_DIR = f"results/models/pol_nn/{mode}"
     VIS_DIR = os.path.join(OUTPUT_MODEL_DIR, "comparison")
 
     # 2. Execute Phase 1: Training and Exporting
     npz_results_path = run_training(
-        x_path="data/processed/nn/blue/X.npy",
-        y_path="data/processed/nn/blue/Y.npy",
-        x_err_path="data/processed/nn/blue/X_error.npy",
+        x_path=f"data/processed/nn/{mode}/X.npy",
+        y_path=f"data/processed/nn/{mode}/Y.npy",
+        x_err_path=f"data/processed/nn/{mode}/X_error.npy",
         output_model_dir=OUTPUT_MODEL_DIR,
         test_size=0.2,
         random_state=42,
-        epochs_adam=2000,
+        epochs_adam=500,
         steps_lbfgs=100,
         max_batch_size=15
     )

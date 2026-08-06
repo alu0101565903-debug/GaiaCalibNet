@@ -15,8 +15,8 @@ from src.utils.visualize_spectra.catalogs_management import (
     get_clean_filename,
     get_wavelength_grid,
     resolve_catalog_columns,
-    group_catalog_by_color,
 )
+from src.utils.data.catalogs_by_color import group_catalog_by_color
 
 def generate_stacked_plots_by_color(
     mode: str = "ratio",  # Options: "ratio" or "chi"
@@ -44,11 +44,11 @@ def generate_stacked_plots_by_color(
 
     wavelengths = get_wavelength_grid(X.shape[1])
     id_col, name_col = resolve_catalog_columns(df)
-    df, labels = group_catalog_by_color(df, color_column=color_column)
+    df, labels = group_catalog_by_color(df, name_column=name_col)
 
     # 2. Iterate through color groups
     for group_name in labels:
-        group_df = df[df["Color_Group"] == group_name]
+        group_df = df[df["color_category"] == group_name]
         num_stars = len(group_df)
 
         if num_stars == 0:

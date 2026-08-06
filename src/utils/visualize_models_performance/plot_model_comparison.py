@@ -4,16 +4,15 @@ Module: plot_model_comparison.py
 Visualization module for the Residual Physics-Informed Neural Network (PINN).
 
 This script is responsible for generating quantitative and qualitative validation 
-plots by reading the exported `.npz` inference files. It compares the uncalibrated 
-Gaia spectra, the CALSPEC ground-truth references, the classical polynomial baseline, 
-and the PINN predictions across multiple samples.
+plots by reading the exported ".npz" inference files. It compares the uncalibrated 
+Gaia spectra, the CALSPEC ground-truth references and the PINN predictions across 
+multiple samples.
 """
 
 import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-from GaiaXPcorrection.GaiaDR3XPspectracorrectionV1 import correction, correction_df
 
 def generate_plots_from_file(input_filepath: str, output_dir: str, num_samples: int = 5):
     """
@@ -72,8 +71,8 @@ def generate_plots_from_file(input_filepath: str, output_dir: str, num_samples: 
         )
 
         # Top Panel: Absolute Flux
-        ax1.plot(wave, Y_ref[i], label="CALSPEC Reference (Y)", color="black", alpha=0.85, linewidth=1.2)
-        ax1.plot(wave, X_orig[i], label="Original Gaia BP/RP (X)", color="#4f88f3", alpha=0.6, linewidth=1.2)
+        ax1.plot(wave, Y_ref[i], label="CALSPEC Reference (Y)", color="black", alpha=0.85, linewidth=2)
+        ax1.plot(wave, X_orig[i], label="Original Gaia BP/RP (X)", color="#4f88f3", alpha=0.6, linewidth=1.5)
         if X_huang is not None and np.any(X_huang[i] > 0):
             ax1.plot(
                 wave, X_huang[i], 
@@ -94,7 +93,7 @@ def generate_plots_from_file(input_filepath: str, output_dir: str, num_samples: 
         res_pinn_pct = ((X_pinn[i] - Y_ref[i]) / peak_flux) * 100.0
 
         ax2.axhline(0.0, color="black", linestyle="-", linewidth=1.2, alpha=0.85)
-        ax2.plot(wave, res_original_pct, label="Original Gaia Residual", color="#4f88f3", alpha=0.5, linewidth=1.0)
+        ax2.plot(wave, res_original_pct, label="Original Gaia Residual", color="#4f88f3", alpha=0.75, linewidth=1.0)
 
         if X_huang is not None and np.any(X_huang[i] > 0):
             res_baseline_pct = ((X_huang[i] - Y_ref[i]) / peak_flux) * 100.0

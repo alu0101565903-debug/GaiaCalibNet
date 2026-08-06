@@ -19,7 +19,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, r2_score
 from src.models.baselines import get_baseline_models
-from src.utils.metrics.alternative_metrics import calculate_mape, calculate_pseudo_chi_square, calculate_band_errors
+from src.utils.metrics.alternative_metrics import calculate_mape, calculate_reduced_chi_square, calculate_band_errors
 
 
 def evaluate_baselines(mode: str = "spectrum"):
@@ -44,9 +44,10 @@ def evaluate_baselines(mode: str = "spectrum"):
         raise ValueError("Mode must be either 'spectrum' or 'features'.")
         
     targets_path = "data/processed/Y.npy"
+    x_err_path = "data/processed/X_error.npy"
     
     # 2. Path Validation
-    if not os.path.exists(features_path) or not os.path.exists(targets_path):
+    if not os.path.exists(features_path) or not os.path.exists(targets_path) or not os.path.exists(x_err_path):
         print(f"[!] Error: Dataset binaries not found for mode '{mode}'.")
         print("Please ensure your preprocessing pipeline has been executed prior to training.")
         return
@@ -55,9 +56,12 @@ def evaluate_baselines(mode: str = "spectrum"):
     print("-> Loading pre-processed data matrices into memory...")
     X = np.load(features_path)
     Y = np.load(targets_path)
+    X_err = np.load(x_err_path)
     
     # 4. Train/Validation split using an 80/20 ratio to mirror the PINN setup.
-    X_train, X_test, Y_train, Y_test = train_test_split(X, Y, test_size=0.2, random_state=42)
+    X_train, X_test, Y_train, Y_test, X_err_train, X_err_test = train_test_split(
+        X, Y, X_err, test_size=0.2, random_state=42
+    )
     
     print(f"-> Training Set size : {X_train.shape[0]} samples")
     print(f"-> Testing Set size  : {X_test.shape[0]} samples")
@@ -106,19 +110,20 @@ def evaluate_baselines(mode: str = "spectrum"):
         # Compute alternative domain-specific metrics
         Y_test_flat = Y_test.flatten()
         Y_pred_flat = Y_pred.flatten()
+        Y_err_flat = X_err_test.flatten()
         
         wave_grid_np = np.linspace(330.0, 1050.0, 300)
         wave_flat = np.tile(wave_grid_np, len(Y_test))
         
         mape = calculate_mape(Y_test_flat, Y_pred_flat)
-        chi2 = calculate_pseudo_chi_square(Y_test_flat, Y_pred_flat)
+        chi2 = calculate_reduced_chi_square(Y_test_flat, Y_pred_flat, Y_err_flat)
         band_errs = calculate_band_errors(wave_flat, Y_test_flat, Y_pred_flat)
         
         print(f"    -> Final MAPE (%)             : {mape:.4f}%")
         print(f"    -> Final Pseudo Chi-Square    : {chi2:.4e}")
-        print(f"    -> MAE Blue Band (<500nm)     : {band_errs['blue']:.4e}")
-        print(f"    -> MAE Green Band (500-700nm) : {band_errs['green']:.4e}")
-        print(f"    -> MAE Red Band (>700nm)      : {band_errs['red']:.4e}")
+        print(f"    -> MAE Blue Band (<500nm)     : {band_errs['blue_mae']:.4e}")
+        print(f"    -> MAE Green Band (500-700nm) : {band_errs['green_mae']:.4e}")
+        print(f"    -> MAE Red Band (>700nm)      : {band_errs['red_mae']:.4e}")
         
         # Package the fitted model together with the scaling parameters so
         # that the baseline can be safely loaded and used for inference later.

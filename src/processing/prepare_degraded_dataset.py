@@ -5,13 +5,12 @@ Report Section: Chapter 5 Data Processing & Feature Engineering
 This script constructs the full regression dataset (X and Y matrices) for training 
 and evaluating the PINN model. It maps CALSPEC target FITS spectra to Gaia DR3 
 source IDs, converts wavelengths from Ångströms to nanometers, applies LSF 
-resolution degradation using the custom convolution module `c`, interpolates the 
+resolution degradation using the custom convolution module 'c', interpolates the 
 data onto a unified 300-channel wavelength grid (330 nm - 1050 nm), and saves the 
 resulting matrices as single-precision float32 NumPy arrays.
 """
 
 import os
-import sys
 import warnings
 import numpy as np
 import pandas as pd
@@ -96,12 +95,12 @@ def fetch_gaia_xp_spectrum(
     a forward-modeled instrumental observation as a fallback.
 
     Parameters:
-        source_id (str): Gaia DR3 source identifier.
-        wave_grid_nm (np.ndarray): Common target wavelength grid in nanometers.
-        fallback_y (np.ndarray): Degraded CALSPEC reference target vector.
+    - source_id (str): Gaia DR3 source identifier.
+    - wave_grid_nm (np.ndarray): Common target wavelength grid in nanometers.
+    - fallback_y (np.ndarray): Degraded CALSPEC reference target vector.
 
     Returns:
-        tuple[np.ndarray, np.ndarray]: Gaia XP input spectrum vector and error vector (float32).
+    - tuple[np.ndarray, np.ndarray]: Gaia XP input spectrum vector and error vector (float32).
     """
     valid_id = str(source_id).strip()
     if valid_id not in ["0", "", "nan", "None"]:
@@ -173,6 +172,8 @@ def create_dataset(
     Y_list = []
     X_error_list = []
     G_mags_list = []
+    bp_rp_list = []
+    ruwe_list = []
     processed_stars = []
     processed_ids = []
 
@@ -180,7 +181,10 @@ def create_dataset(
         star_name = str(row.get("calspec_name", row.get("Name"))).strip()
         fits_filename = str(row.get("fits_file", row.get("File_Source"))).strip()
         gaia_id = str(row.get("gaia_source_id", "0")).strip()
+        
         g_mag = float(row.get("phot_g_mean_mag", 15.0))
+        bp_rp = float(row.get("bp_rp", 0.75))
+        ruwe = float(row.get("ruwe", 1.0))
 
         # Match target FITS filename (exact or case-insensitive)
         matched_filename = None
@@ -214,6 +218,8 @@ def create_dataset(
             Y_list.append(y_target)
             X_error_list.append(x_error)
             G_mags_list.append(g_mag)
+            bp_rp_list.append(bp_rp)
+            ruwe_list.append(ruwe)
             processed_stars.append(star_name)
             processed_ids.append(gaia_id)
 
@@ -232,6 +238,8 @@ def create_dataset(
     Y = np.array(Y_list, dtype=np.float32)
     X_error = np.array(X_error_list, dtype=np.float32)
     G_mags = np.array(G_mags_list, dtype=np.float32)
+    BP_RP = np.array(bp_rp_list, dtype=np.float32)
+    RUWE = np.array(ruwe_list, dtype=np.float32)
 
     # Persist dataset to disk
     os.makedirs(abs_output_dir, exist_ok=True)
@@ -239,6 +247,8 @@ def create_dataset(
     np.save(os.path.join(abs_output_dir, "Y.npy"), Y)
     np.save(os.path.join(abs_output_dir, "X_error.npy"), X_error)
     np.save(os.path.join(abs_output_dir, "G_mags.npy"), G_mags)
+    np.save(os.path.join(abs_output_dir, "bp_rp.npy"), BP_RP)
+    np.save(os.path.join(abs_output_dir, "ruwe.npy"), RUWE)
     np.save(os.path.join(abs_output_dir, "star_names.npy"), np.array(processed_stars))
     np.save(os.path.join(abs_output_dir, "gaia_source_ids.npy"), np.array(processed_ids))
     np.save(os.path.join(abs_output_dir, "wave_grid.npy"), wave_length_grid)
@@ -250,6 +260,7 @@ def create_dataset(
     print(f"Input Features Matrix Shape (X)  : {X.shape} (float32)")
     print(f"Input Errors Matrix Shape (X_err): {X_error.shape} (float32)")
     print(f"Target Ground Truth Shape (Y)    : {Y.shape} (float32)")
+    print(f"Stellar Params Extracted         : G_mags, bp_rp, ruwe ({len(G_mags)} samples each)")
     print(f"Wavelength Grid Storage Vector   : {wave_length_grid.shape} channels")
     print(f"Output Directory Location        : {abs_output_dir}")
     print("=" * 60 + "\n")
