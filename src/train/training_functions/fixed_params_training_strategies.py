@@ -8,20 +8,21 @@ This module implements a hybrid two-stage optimization strategy for Physics-Info
 Neural Networks (PINNs) applied to Gaia spectrophotometric recalibration. The strategy 
 combines stochastic first-order gradient descent (Adam) for rapid global trajectory 
 exploration with quasi-Newton second-order full-batch optimization (L-BFGS) for 
-high-precision asymptotic convergence.
+high-precision asymptotic convergence near physical minima.
 
-Optimization Stages:
-1. Stage 1 (Adam Optimization):
-   Operates on mini-batched dataloaders. Navigates complex loss landscapes, handles 
-   non-convex regions, and incorporates gradient norm clipping to prevent exploding 
-   gradients near spectral absorption features.
-2. Stage 2 (L-BFGS Refinement):
-   Operates on the complete full-batch dataset. Utilizes second-order curvature 
-   information via Line Search under Strong Wolfe conditions to converge tightly 
-   around physics-constrained local minima.
+Optimization Pipeline:
+    1. Stage 1 (Adam Optimization):
+       Operates on mini-batched dataloaders. Navigates complex non-convex loss landscapes, 
+       handles irregular feature spaces, and incorporates gradient norm clipping to prevent 
+       exploding gradients near sharp spectral absorption features.
+    2. Stage 2 (L-BFGS Refinement):
+       Operates on the complete full-batch dataset. Utilizes second-order curvature 
+       information via Line Search under Strong Wolfe conditions to converge tightly 
+       around physics-constrained local minima.
 """
 
 from typing import Dict, List, Optional, Tuple
+
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -36,23 +37,29 @@ def train_adam_fixed(
     """
     Stage 1: Stable Adam training using fixed physics constraints.
 
-    This function performs the initial training phase using the Adam optimizer. 
-    Adam provides robust, first-order gradient-based optimization to quickly 
-    navigate the loss landscape and locate a viable local minimum. It applies 
-    gradient clipping to prevent exploding gradients.
+    Performs the initial broad optimization phase using the Adam optimizer. Adam provides 
+    robust first-order gradient-based updates to rapidly navigate the loss landscape and 
+    locate a viable basin of attraction. Applies gradient norm clipping to ensure numerical stability.
 
-    Args:
-    - model (torch.nn.Module): The neural network model to be trained.
-    - epochs (int): The total number of training epochs for this stage.
-    - dataloader (DataLoader): PyTorch DataLoader providing batched training data.
-    - physics_criterion (torch.nn.Module): The custom physics-informed loss 
-        function (e.g., BiCubicPhysicsInformedLoss).
-    - lr (float, optional): The learning rate for the Adam optimizer. Defaults to 0.001.
+    Parameters
+    ----------
+    model : torch.nn.Module
+        The neural network model to be trained.
+    epochs : int
+        The total number of training epochs for this optimization stage.
+    dataloader : DataLoader
+        PyTorch DataLoader providing batched training data (X, Y, and optional auxiliary parameters).
+    physics_criterion : torch.nn.Module
+        The custom physics-informed loss function evaluating residuals and constraints.
+    lr : float, default=0.001
+        The learning rate for the Adam optimizer.
 
-    Returns:
-    - torch.nn.Module: The model with updated weights after Stage 1 training.
+    Returns
+    -------
+    Tuple[torch.nn.Module, Dict[str, List[float]]]
+        - The model with updated weights after Stage 1 training.
+        - Dictionary containing historical epoch-wise loss traces ('total_loss', 'loss_flux', 'loss_smooth').
     """
-
     device = next(model.parameters()).device
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
@@ -69,7 +76,7 @@ def train_adam_fixed(
             if len(batch) == 3:
                 X_batch, Y_batch, params_batch = batch[0].to(device), batch[1].to(device), batch[2].to(device)
             else:
-                # Fallback por seguridad si se usa un dataset antiguo
+                # Fallback for safety if an older dataset is used
                 X_batch, Y_batch = batch[0].to(device), batch[1].to(device)
                 params_batch = None
 
@@ -114,25 +121,32 @@ def train_lbfgs_fixed(
     steps: int = 10
 ) -> Tuple[torch.nn.Module, Dict[str, List[float]]]:
     """
-    Stage 2: Refinement stage using the L-BFGS optimizer.
+    Stage 2: High-precision refinement stage using the L-BFGS optimizer.
 
-    Following the Adam optimization, this stage uses L-BFGS (a quasi-Newton, 
-    second-order optimization algorithm) to fine-tune the network weights. 
-    L-BFGS is highly effective at finding precise local minima once Adam has 
-    brought the parameters into the correct basin of attraction. This stage 
-    processes the entire dataset at once (full-batch) rather than in mini-batches.
+    Following Adam optimization, this stage leverages L-BFGS (a quasi-Newton, second-order 
+    optimization algorithm) to fine-tune network weights. L-BFGS is highly effective at finding 
+    precise local minima once parameters are brought into the correct basin of attraction. 
+    This stage processes the entire dataset at once (full-batch) utilizing line searches 
+    under Strong Wolfe conditions.
 
-    Args:
-    - model (torch.nn.Module): The neural network model, pre-trained by Stage 1.
-    - X_full (torch.Tensor): The complete dataset of uncalibrated spectra.
-    - Y_full (torch.Tensor): The complete dataset of target reference spectra.
-    - params_full (torch.Tensor): The complete dataset of physical parameters.
-    - physics_criterion (torch.nn.Module): The custom physics-informed loss function.
-    - steps (int, optional): The number of top-level L-BFGS optimization steps 
-        to perform. Defaults to 10.
+    Parameters
+    ----------
+    model : torch.nn.Module
+        The neural network model, pre-trained during Stage 1.
+    X_full : torch.Tensor
+        The complete tensor of uncalibrated input spectra.
+    Y_full : torch.Tensor
+        The complete tensor of target reference spectra.
+    params_full : torch.Tensor, optional
+        The complete tensor of auxiliary stellar physical parameters.
+    physics_criterion : torch.nn.Module
+        The custom physics-informed loss function.
+    steps : int, default=10
+        The number of top-level L-BFGS optimization steps to perform.
 
-    Returns:
-    - Tuple[torch.nn.Module, Dict[str, List[float]]]
+    Returns
+    -------
+    Tuple[torch.nn.Module, Dict[str, List[float]]]
         - Refined PyTorch model instance.
         - Dictionary containing historical step-wise loss traces.
     """
@@ -201,26 +215,36 @@ def train_2stage_fixed(
     steps_lbfgs: int = 10
 ) -> Tuple[torch.nn.Module, Dict[str, List[float]]]:
     """
-    Executes the complete, definitive 2-stage training pipeline (Adam + L-BFGS).
+    Executes the complete, definitive two-stage training pipeline (Adam + L-BFGS).
 
-    This function acts as the primary orchestrator for the training process. 
-    It sequentially invokes the robust Adam training phase followed by the 
-    high-precision L-BFGS refinement phase.
+    Acts as the primary orchestrator for the PINN training pipeline by sequentially 
+    invoking robust first-order Adam mini-batch training followed by high-precision 
+    second-order L-BFGS full-batch refinement.
 
-    Args:
-    - model (torch.nn.Module): The uninitialized neural network model.
-    - dataloader (DataLoader): Batched DataLoader for Stage 1 (Adam).
-    - X_full (torch.Tensor): Full uncalibrated dataset tensor for Stage 2 (L-BFGS).
-    - Y_full (torch.Tensor): Full reference dataset tensor for Stage 2 (L-BFGS).
-    - params_full (torch.Tensor): Full physical parameters tensor for Stage 2 (L-BFGS).
-    - physics_criterion (torch.nn.Module): The loss function computing physical constraints.
-    - epochs_adam (int, optional): Number of epochs for the Adam optimizer. Defaults to 1000.
-    - steps_lbfgs (int, optional): Number of steps for the L-BFGS optimizer. Defaults to 10.
+    Parameters
+    ----------
+    model : torch.nn.Module
+        The initialized neural network model instance.
+    dataloader : DataLoader
+        Batched DataLoader for Stage 1 (Adam optimization).
+    X_full : torch.Tensor
+        Full uncalibrated dataset tensor for Stage 2 (L-BFGS refinement).
+    Y_full : torch.Tensor
+        Full reference dataset tensor for Stage 2 (L-BFGS refinement).
+    params_full : torch.Tensor, optional
+        Full auxiliary physical parameters tensor for Stage 2 (L-BFGS refinement).
+    physics_criterion : torch.nn.Module
+        The loss function computing data fidelity and physical constraints.
+    epochs_adam : int, default=1000
+        Number of epochs for the Adam optimizer stage.
+    steps_lbfgs : int, default=10
+        Number of optimization steps for the L-BFGS optimizer stage.
 
-    Returns:
-    - Tuple[torch.nn.Module, Dict[str, List[float]]]
-        - Fully trained network model.
-        - Merged history dictionary containing loss traces from both stages.
+    Returns
+    -------
+    Tuple[torch.nn.Module, Dict[str, List[float]]]
+        - Fully trained and refined network model.
+        - Merged history dictionary containing concatenated loss traces from both training stages.
     """
     print("=" * 60)
     print("[7.1] EXECUTING DEFINITIVE 2-STAGE TRAINING PIPELINE")
