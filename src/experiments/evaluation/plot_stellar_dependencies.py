@@ -66,6 +66,7 @@ def load_raw_parameters(data_dir: str) -> Tuple[np.ndarray, np.ndarray, np.ndarr
 
 def evaluate_stellar_dependencies(
     dataset_mode: str = "all", 
+    nn_mode: str = "pca_nn",
     n_splits: int = 6, 
     random_state: int = 42
 ) -> None:
@@ -83,7 +84,7 @@ def evaluate_stellar_dependencies(
     """
     # Define directory paths
     data_dir = f"data/processed/nn/{dataset_mode}"
-    models_dir = f"results/models/pca_nn_cv/{dataset_mode}"
+    models_dir = f"results/models/{nn_mode}_cv/{dataset_mode}"
     
     # 1. Load full raw dataset and unnormalized stellar parameters
     print(f"[>] Loading original catalog from: {data_dir}")

@@ -13,22 +13,27 @@ Loss Architectures:
 1. BiCubicPhysicsInformedLoss:
    Combines normalized flux error, total integrated flux conservation, and 
    first-derivative (L2) smoothness penalties on predicted $R(\lambda)$ curves.
-2. PCAPhysicsInformedLoss:
+2. GaussianPhysicsInformedLoss:
+   Multi-term relative loss employing Smooth L1 (Huber) data fitting, relative 
+   integrated flux conservation, and combined TV/curvature shape preservation penalties.
+3. PCAPhysicsInformedLoss:
    Evaluates relative percentage errors between calibrated spectra and ground-truth 
    references using frozen PCA basis vectors.
-3. PCAParamsPhysicsInformedLoss:
+4. PCAParamsPhysicsInformedLoss:
    Extended PCA loss supporting physical stellar parameter conditioning, 
    second-derivative curvature penalties, and L2 regularization on higher-order 
    PCA components ($c_i, i \ge 1$).
-4. GaussianPhysicsInformedLoss:
-   Multi-term relative loss employing Smooth L1 (Huber) data fitting, relative 
-   integrated flux conservation, and combined TV/curvature shape preservation penalties.
+5. UndegradedPCAPhysicsInformedLoss:
+   Loss function tailored for dual-branch PINNs, applying Smooth L1 fitting on 
+   scaled flux, second-derivative curvature constraints strictly on the Chebyshev global 
+   branch, and $L_1$ regularization on local residual peak corrections.
 """
 
 from typing import Optional, Tuple, Union
 import numpy as np
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 class BiCubicPhysicsInformedLoss(nn.Module):
     """
@@ -92,6 +97,80 @@ class BiCubicPhysicsInformedLoss(nn.Module):
         return total_loss, loss_flux, loss_smooth
 
 
+class GaussianPhysicsInformedLoss(nn.Module):
+    """
+    Multi-Component Relative Loss Function using Robust Huber Fitting.
+
+    Combines Huber (Smooth L1) data consistency, relative integrated flux 
+    conservation, and shape-preserving Total Variation (TV) + curvature penalties.
+
+    Attributes:
+    - huber (nn.SmoothL1Loss): The PyTorch Smooth L1 loss function used 
+            for the data consistency term.
+    """
+    def __init__(self) -> None:
+        super(GaussianPhysicsInformedLoss, self).__init__()
+        self.huber = nn.SmoothL1Loss(beta=0.01)
+
+    def forward(
+        self, 
+        model: nn.Module, 
+        X: torch.Tensor, 
+        Y: torch.Tensor, 
+        Sigma: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Computes the physics-informed loss components.
+
+        Parameters:
+        - model (nn.Module): The neural network model predicting the recalibration factor.
+        - X (torch.Tensor): The input uncalibrated spectra.
+        - Y (torch.Tensor): The reference ground-truth spectra.
+        - Sigma (torch.Tensor, optional): The associated uncertainty/variance of the 
+            input data. If None, the target Y is used as the scaling factor. Defaults to None.
+
+        Returns:
+        - Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: A tuple containing the three individual loss components:
+            - loss_data (torch.Tensor): The relative data consistency loss.
+            - loss_flux (torch.Tensor): The relative integrated flux conservation loss.
+            - loss_grad (torch.Tensor): The combined shape preservation (gradient) loss.
+        """
+        eps = 1e-12
+        
+        R_pred = model(X)
+        X_calibrated = X * R_pred
+        
+        # Component A: Data Loss
+        if Sigma is not None:
+            diff_relative = (X_calibrated - Y) / (Sigma + eps)
+        else:
+            diff_relative = (X_calibrated - Y) / (Y + eps)
+            
+        loss_data = self.huber(diff_relative, torch.zeros_like(diff_relative))
+
+        # Component B: Relative Integrated Flux Conservation
+        flux_calibrated = torch.sum(X_calibrated, dim=1)
+        flux_calspec = torch.sum(Y, dim=1)
+        loss_flux = torch.mean(((flux_calibrated - flux_calspec) / (flux_calspec + eps)) ** 2)
+
+        # Component C: Shape Preservation (penalty on the 1st and 2nd derivatives)
+        # 1. Penalize high-frequency noise (differences between adjacent pixels)
+        d1_R = R_pred[:, 1:] - R_pred[:, :-1]
+        loss_tv = torch.mean(torch.abs(d1_R)) # Use L1 (abs) or L2 (**2) norm
+        
+        # 2. Original curvature penalty (second derivative)
+        d2_R = R_pred[:, 2:] - 2 * R_pred[:, 1:-1] + R_pred[:, :-2]
+        loss_curv = torch.mean(d2_R ** 2)
+
+        # Multipliers (adjust lambda_tv if the resulting curve becomes too flat)
+        lambda_tv = 5.0  
+        lambda_curv = 1.0
+
+        loss_grad = (loss_tv * lambda_tv) + (loss_curv * lambda_curv)
+
+        return loss_data, loss_flux, loss_grad
+
+    
 class PCAPhysicsInformedLoss(nn.Module):
     """
     Definitive physics-informed loss function for PCA-based spectral recalibration.
@@ -270,79 +349,70 @@ class PCAParamsPhysicsInformedLoss(nn.Module):
         
         return total_loss, loss_flux, loss_smooth
 
-    
-class GaussianPhysicsInformedLoss(nn.Module):
-    """
-    Multi-Component Relative Loss Function using Robust Huber Fitting.
 
-    Combines Huber (Smooth L1) data consistency, relative integrated flux 
-    conservation, and shape-preserving Total Variation (TV) + curvature penalties.
-
-    Attributes:
-    - huber (nn.SmoothL1Loss): The PyTorch Smooth L1 loss function used 
-            for the data consistency term.
+class UndegradedPCAPhysicsInformedLoss(nn.Module):
     """
-    def __init__(self) -> None:
-        """
-        Initializes the GaussianPhysicsInformedLoss module.
-        """
-        super(GaussianPhysicsInformedLoss, self).__init__()
-        self.huber = nn.SmoothL1Loss(beta=0.01)
+    Physics-Informed Loss Function for Dual-Branch Undegraded PINNs.
+
+    Evaluates Smooth L1 reconstruction error on scaled flux, constrains 
+    continuum curvature strictly on the Chebyshev global branch, and applies $L_1$ 
+    regularization to local residual outputs to prevent continuum distortion.
+
+    Parameters:
+    - curvature_weight (float, default=0.1): Weight factor for Chebyshev continuum curvature penalty.
+    - local_reg_weight (float, default=0.005): Weight factor for $L_1$ norm regularization on local peak residuals.
+    """
+    def __init__(
+        self, 
+        curvature_weight: float = 0.1, 
+        local_reg_weight: float = 0.005
+    ) -> None:
+        super().__init__()
+        self.curvature_weight = curvature_weight
+        self.local_reg_weight = local_reg_weight
 
     def forward(
         self, 
         model: nn.Module, 
-        X: torch.Tensor, 
-        Y: torch.Tensor, 
-        Sigma: Optional[torch.Tensor] = None
+        x_input: torch.Tensor, 
+        y_target: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Computes the physics-informed loss components.
+        Computes multi-component loss for dual-branch (Chebyshev + local residual) PINNs.
 
         Parameters:
-        - model (nn.Module): The neural network model predicting the recalibration factor.
-        - X (torch.Tensor): The input uncalibrated spectra.
-        - Y (torch.Tensor): The reference ground-truth spectra.
-        - Sigma (torch.Tensor, optional): The associated uncertainty/variance of the 
-            input data. If None, the target Y is used as the scaling factor. Defaults to None.
+        - model (nn.Module): Undegraded PINN model instance.
+        - x_input (torch.Tensor): Uncalibrated spectra tensor of shape `(batch_size, input_dim)`.
+        - y_target (torch.Tensor): CALSPEC reference spectra tensor of shape `(batch_size, input_dim)`.
 
         Returns:
-        tuple: A tuple containing the three individual loss components:
-        - loss_data (torch.Tensor): The relative data consistency loss.
-        - loss_flux (torch.Tensor): The relative integrated flux conservation loss.
-        - loss_grad (torch.Tensor): The combined shape preservation (gradient) loss.
+        - Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            - total_loss (torch.Tensor): Aggregated loss value.
+            - loss_flux (torch.Tensor): Smooth L1 flux reconstruction error.
+            - loss_curvature (torch.Tensor): Curvature penalty evaluated on the global continuum branch.
         """
-        eps = 1e-12
+        out = model(x_input)
+        global_coeffs, local_residual = out
         
-        R_pred = model(X)
-        X_calibrated = X * R_pred
+        R_total = model.reconstruct(out)
+        calibrated_spec = x_input * R_total
         
-        # Component A: Data Loss
-        if Sigma is not None:
-            diff_relative = (X_calibrated - Y) / (Sigma + eps)
-        else:
-            diff_relative = (X_calibrated - Y) / (Y + eps)
-            
-        loss_data = self.huber(diff_relative, torch.zeros_like(diff_relative))
+        scale_y = torch.median(y_target, dim=1, keepdim=True)[0] + 1e-30
+        y_norm = y_target / scale_y
+        cal_norm = calibrated_spec / scale_y
 
-        # Component B: Relative Integrated Flux Conservation
-        flux_calibrated = torch.sum(X_calibrated, dim=1)
-        flux_calspec = torch.sum(Y, dim=1)
-        loss_flux = torch.mean(((flux_calibrated - flux_calspec) / (flux_calspec + eps)) ** 2)
+        # Direct error calculation to capture high-frequency features
+        loss_flux = F.smooth_l1_loss(cal_norm, y_norm, beta=0.05)
 
-        # Component C: Shape Preservation (penalty on the 1st and 2nd derivatives)
-        # 1. Penalize high-frequency noise (differences between adjacent pixels)
-        d1_R = R_pred[:, 1:] - R_pred[:, :-1]
-        loss_tv = torch.mean(torch.abs(d1_R)) # Use L1 (abs) or L2 (**2) norm
-        
-        # 2. Original curvature penalty (second derivative)
-        d2_R = R_pred[:, 2:] - 2 * R_pred[:, 1:-1] + R_pred[:, :-2]
-        loss_curv = torch.mean(d2_R ** 2)
+        # Curvature is evaluated exclusively on the Chebyshev global continuum branch
+        R_global = torch.matmul(global_coeffs, model.pca_basis)
+        d2R = R_global[:, 2:] - 2 * R_global[:, 1:-1] + R_global[:, :-2]
+        loss_curvature = torch.mean(d2R ** 2)
 
-        # Multipliers (adjust lambda_tv if the resulting curve becomes too flat)
-        lambda_tv = 5.0  
-        lambda_curv = 1.0
+        # Regularization to prevent local peak corrections from distorting the continuum
+        #loss_local_reg = torch.mean(local_residual ** 2)
+        loss_local_reg = torch.mean(torch.abs(local_residual))
 
-        loss_grad = (loss_tv * lambda_tv) + (loss_curv * lambda_curv)
+        total_loss = loss_flux + (self.curvature_weight * loss_curvature) + (self.local_reg_weight * loss_local_reg)
 
-        return loss_data, loss_flux, loss_grad
+        return total_loss, loss_flux, loss_curvature

@@ -11,22 +11,27 @@ Supported Architectures:
 1. BiCubicSpectralPINN:
    Predicts correction values at sparse control knots and upsamples to full 
    spectral resolution via 2D bicubic interpolation to enforce smoothness.
-2. PCASpectralPINN:
-   Predicts expansion coefficients c_i for a pre-computed Principal Component Analysis 
-   (PCA) basis set constructed from residual spectral features.
-3. PCAParamsSpectralPINN:
-   Extends PCASpectralPINN by incorporating stellar physical properties (e.g., G mag, 
-   BP-RP color, RUWE) alongside spectral flux input.
-4. GaussianSpectralPINN:
+2. GaussianSpectralPINN:
    Embeds an internal 1D Gaussian kernel smoothing layer in the forward path to 
    filter high-frequency noise prior to evaluating dense layer transformations.
+3. PCASpectralPINN:
+   Predicts expansion coefficients c_i for a pre-computed Principal Component Analysis 
+   (PCA) basis set constructed from residual spectral features.
+4. PCAParamsSpectralPINN:
+   Extends PCASpectralPINN by incorporating stellar physical properties (e.g., G mag, 
+   BP-RP color, RUWE) alongside spectral flux input.
+5. UndegradedPCASpectralPINN:
+   Uses a dual-branch architecture with a CNN feature extractor to simultaneously 
+   predict global continuum corrections (via a Chebyshev polynomial basis) and 
+   highly localized peak corrections (via a direct residual output).
 """
 
-from typing import Dict, Optional, Type, Union
+from typing import Dict, Optional, Type, Tuple, Union
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import scipy.special as special
 
 
 # =====================================================================
@@ -123,7 +128,78 @@ class BiCubicSpectralPINN(BaseSpectralPINN):
 
 
 # =====================================================================
-# 2. PCA BASIS COMPONENT PINN ARCHITECTURE
+# 2. GAUSSIAN SMOOTHED RESIDUAL PINN ARCHITECTURE
+# =====================================================================
+
+class GaussianSpectralPINN(BaseSpectralPINN):
+    """
+    Residual PINN Architecture featuring Embedded 1D Gaussian Filtering.
+
+    Applies an internal fixed 1D Gaussian smoothing convolution operation to inputs 
+    prior to feedforward transformation. This structural filter prevents overfitting 
+    to localized absorption/emission lines and photon noise.
+
+    Parameters
+    - input_dim (int): Number of spectral wavelength bins.
+    - kernel_size (int, default=7): Width of 1D Gaussian convolution kernel window (must be an odd integer).
+    - sigma (float, default=1.5): Standard deviation governing Gaussian kernel smoothing width.
+    """
+    def __init__(self, input_dim: int, kernel_size: int = 7, sigma: float = 1.5) -> None:
+        super(GaussianSpectralPINN, self).__init__()
+        
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 256),
+            nn.SiLU(),
+            nn.Linear(256, 128),
+            nn.SiLU(),
+            nn.Linear(128, 64),
+            nn.SiLU(),
+            nn.Linear(64, input_dim)
+        )
+        
+        # Initialize output projection layer to zeros
+        nn.init.zeros_(self.net[-1].weight)
+        nn.init.zeros_(self.net[-1].bias)
+
+        # Construct normalized 1D Gaussian Kernel
+        x_coord = torch.arange(kernel_size, dtype=torch.float32) - (kernel_size - 1) / 2
+        g = torch.exp(-(x_coord ** 2) / (2 * (sigma ** 2)))
+        g = g / g.sum()
+        
+        # Register kernel as buffer tensor of shape (out_channels=1, in_channels=1, kernel_size)
+        self.register_buffer("gaussian_kernel", g.view(1, 1, kernel_size))
+        self.kernel_padding = kernel_size // 2
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Execute forward pass applying Gaussian smoothing filter beforehand.
+
+        Parameters
+        x (torch.Tensor): Uncalibrated input spectra tensor of shape "(batch_size, input_dim)".
+
+        Returns
+        - torch.Tensor: Predicted multiplicative factor $R(lambda)$ clamped to [0.3, 3.0], 
+            shape "(batch_size, input_dim)".
+        """
+        # 1. Local normalization
+        max_val = torch.max(x, dim=1, keepdim=True)[0] + 1e-15
+        x_norm = x / max_val
+        
+        # 2. Apply 1D Gaussian convolution filter
+        x_norm_3d = x_norm.unsqueeze(1) 
+        x_smoothed = F.conv1d(x_norm_3d, self.gaussian_kernel, padding=self.kernel_padding)
+        x_smoothed = x_smoothed.squeeze(1)
+
+        # 3. Predict residual shift delta_R from smoothed input spectrum
+        delta_R = self.net(x_smoothed)
+        
+        # 4. Form multiplicative factor R(lambda)
+        R = 1.0 + delta_R
+        return torch.clamp(R, min=0.3, max=3.0)
+
+    
+# =====================================================================
+# 3. PCA BASIS COMPONENT PINN ARCHITECTURE
 # =====================================================================
 
 class PCASpectralPINN(BaseSpectralPINN):
@@ -203,10 +279,10 @@ class PCASpectralPINN(BaseSpectralPINN):
         delta_R = torch.matmul(pca_coeffs, self.pca_basis)
         R = self.pca_mean + delta_R
         return torch.clamp(R, min=0.3, max=3.0)
-
+    
 
 # =====================================================================
-# 3. PCA + STELLAR PARAMETER AUGMENTED PINN ARCHITECTURE
+# 4. PCA + STELLAR PARAMETER AUGMENTED PINN ARCHITECTURE
 # =====================================================================
 
 class PCAParamsSpectralPINN(BaseSpectralPINN):
@@ -295,74 +371,122 @@ class PCAParamsSpectralPINN(BaseSpectralPINN):
 
 
 # =====================================================================
-# 4. GAUSSIAN SMOOTHED RESIDUAL PINN ARCHITECTURE
+# 5. PCA + UNDEGRATED CALSPEC SPECTRUM
 # =====================================================================
-
-class GaussianSpectralPINN(BaseSpectralPINN):
+def build_chebyshev_basis(num_channels: int, degree: int = 10) -> np.ndarray:
     """
-    Residual PINN Architecture featuring Embedded 1D Gaussian Filtering.
+    Constructs a set of Chebyshev polynomials to serve as a smooth global basis.
+    
+    Parameters:
+    - num_channels (int): The number of wavelength bins (spatial resolution).
+    - degree (int, default=10): The number of Chebyshev polynomial degrees to generate.
+    
+    Returns:
+    - np.ndarray: A basis matrix of shape "(degree, num_channels)".
+    """
+    x = np.linspace(-1.0, 1.0, num_channels)
+    basis = np.zeros((degree, num_channels), dtype=np.float32)
+    for k in range(degree):
+        basis[k] = special.eval_chebyt(k, x)
+    return basis
 
-    Applies an internal fixed 1D Gaussian smoothing convolution operation to inputs 
-    prior to feedforward transformation. This structural filter prevents overfitting 
-    to localized absorption/emission lines and photon noise.
+class UndegradedPCASpectralPINN(BaseSpectralPINN):
+    """
+    Dual-branch Physics-Informed Neural Network with a global Chebyshev basis 
+    and a local residual branch for high-frequency corrections.
 
-    Parameters
+    This architecture leverages a Convolutional Neural Network (CNN) as a feature 
+    extractor. It splits predictions into two components:
+    1. A smooth global continuum correction using a defined Chebyshev polynomial basis.
+    2. A strictly bounded local residual correction to capture specific absorption lines.
+    
+    Parameters:
     - input_dim (int): Number of spectral wavelength bins.
-    - kernel_size (int, default=7): Width of 1D Gaussian convolution kernel window (must be an odd integer).
-    - sigma (float, default=1.5): Standard deviation governing Gaussian kernel smoothing width.
+    - degree (int, default=10): Number of Chebyshev polynomial bases to employ.
     """
-    def __init__(self, input_dim: int, kernel_size: int = 7, sigma: float = 1.5) -> None:
-        super(GaussianSpectralPINN, self).__init__()
+    def __init__(self, input_dim: int, degree: int = 10) -> None:
+        super().__init__()
+        self.input_dim = input_dim
+        self.degree = degree
+
+        # Build and register the analytical Chebyshev basis
+        basis_np = build_chebyshev_basis(input_dim, degree=degree)
+        self.register_buffer("pca_basis", torch.tensor(basis_np, dtype=torch.float32))
         
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, 256),
+        # Common feature extractor (1D CNN with GroupNorm and MaxPooling)
+        self.feature_extractor = nn.Sequential(
+            nn.Conv1d(in_channels=1, out_channels=16, kernel_size=9, padding=4),
+            nn.GroupNorm(num_groups=4, num_channels=16),
             nn.SiLU(),
-            nn.Linear(256, 128),
+            nn.MaxPool1d(kernel_size=2),
+            nn.Conv1d(in_channels=16, out_channels=32, kernel_size=7, padding=3),
+            nn.GroupNorm(num_groups=4, num_channels=32),
             nn.SiLU(),
-            nn.Linear(128, 64),
-            nn.SiLU(),
-            nn.Linear(64, input_dim)
+            nn.AdaptiveAvgPool1d(16)
         )
         
-        # Initialize output projection layer to zeros
-        nn.init.zeros_(self.net[-1].weight)
-        nn.init.zeros_(self.net[-1].bias)
-
-        # Construct normalized 1D Gaussian Kernel
-        x_coord = torch.arange(kernel_size, dtype=torch.float32) - (kernel_size - 1) / 2
-        g = torch.exp(-(x_coord ** 2) / (2 * (sigma ** 2)))
-        g = g / g.sum()
+        # BRANCH 1: Global Continuum (Chebyshev basis expansion coefficients)
+        self.fc_global = nn.Sequential(
+            nn.Linear(32 * 16, 64),
+            nn.SiLU(),
+            nn.Linear(64, self.degree)
+        )
         
-        # Register kernel as buffer tensor of shape (out_channels=1, in_channels=1, kernel_size)
-        self.register_buffer("gaussian_kernel", g.view(1, 1, kernel_size))
-        self.kernel_padding = kernel_size // 2
+        # BRANCH 2: Local Peaks / Super-resolution (Pixel-by-Pixel corrections)
+        self.fc_local = nn.Sequential(
+            nn.Linear(32 * 16, 128),
+            nn.SiLU(),
+            nn.Linear(128, self.input_dim)
+        )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Zero initialization for stability at the start of training
+        nn.init.zeros_(self.fc_global[-1].weight)
+        nn.init.zeros_(self.fc_global[-1].bias)
+        nn.init.zeros_(self.fc_local[-1].weight)
+        nn.init.zeros_(self.fc_local[-1].bias)
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Execute forward pass applying Gaussian smoothing filter beforehand.
-
-        Parameters
-        x (torch.Tensor): Uncalibrated input spectra tensor of shape "(batch_size, input_dim)".
-
-        Returns
-        - torch.Tensor: Predicted multiplicative factor $R(lambda)$ clamped to [0.3, 3.0], 
-            shape "(batch_size, input_dim)".
+        Forward pass predicting global basis coefficients and local residual values.
+        
+        Parameters:
+        - x (torch.Tensor): Uncalibrated spectra tensor of shape "(batch_size, input_dim)".
+        
+        Returns:
+        - Tuple[torch.Tensor, torch.Tensor]: 
+            - Global coefficients tensor of shape "(batch_size, degree)".
+            - Local residual tensor of shape "(batch_size, input_dim)".
         """
-        # 1. Local normalization
-        max_val = torch.max(x, dim=1, keepdim=True)[0] + 1e-15
-        x_norm = x / max_val
+        max_val = torch.max(x, dim=1, keepdim=True)[0] + 1e-30
+        x_norm = (x / max_val).unsqueeze(1)  
         
-        # 2. Apply 1D Gaussian convolution filter
-        x_norm_3d = x_norm.unsqueeze(1) 
-        x_smoothed = F.conv1d(x_norm_3d, self.gaussian_kernel, padding=self.kernel_padding)
-        x_smoothed = x_smoothed.squeeze(1)
+        features = self.feature_extractor(x_norm)
+        features = features.view(features.size(0), -1)
+        
+        # Global correction limit bounded to +/- 15% using tanh
+        global_coeffs = 0.15 * torch.tanh(self.fc_global(features))
+        
+        # Limit for deep peak injection bounded to +/- 30% using tanh
+        local_residual = 0.30 * torch.tanh(self.fc_local(features))
+        
+        return global_coeffs, local_residual
 
-        # 3. Predict residual shift delta_R from smoothed input spectrum
-        delta_R = self.net(x_smoothed)
+    def reconstruct(self, model_output: Tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
+        """
+        Merges the global baseline and local residual branches into the final prediction.
         
-        # 4. Form multiplicative factor R(lambda)
-        R = 1.0 + delta_R
-        return torch.clamp(R, min=0.3, max=3.0)
+        Parameters:
+        - model_output (Tuple[torch.Tensor, torch.Tensor]): The raw output from `forward`, 
+          containing global coefficients and local residuals.
+          
+        Returns:
+        - torch.Tensor: Reconstructed multiplicative factor $R(\lambda)$ of shape "(batch_size, input_dim)".
+        """
+        global_coeffs, local_residual = model_output
+        R_global = torch.matmul(global_coeffs, self.pca_basis)
+        
+        # Total correction is: 1.0 (Identity) + Smooth_Curve (Global) + Sharp_Peaks (Local)
+        return 1.0 + R_global + local_residual
 
 
 # =====================================================================
@@ -373,7 +497,8 @@ MODEL_REGISTRY: Dict[str, Type[nn.Module]] = {
     "residual_bicubic": BiCubicSpectralPINN,
     "residual_gaussian": GaussianSpectralPINN,
     "pca_nn": PCASpectralPINN,
-    "pca_params_nn": PCAParamsSpectralPINN
+    "pca_params_nn": PCAParamsSpectralPINN,
+    "pca_undegraded_nn": UndegradedPCASpectralPINN
 }
 
 

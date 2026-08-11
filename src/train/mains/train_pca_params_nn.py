@@ -262,7 +262,7 @@ if __name__ == "__main__":
         output_model_dir=OUTPUT_MODEL_DIR,
         test_size=0.2,
         random_state=42,
-        num_components=5,
+        num_components=15,
         epochs_adam=1000,
         steps_lbfgs=100,
         max_batch_size=15

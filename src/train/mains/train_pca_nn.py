@@ -46,6 +46,11 @@ class PCAExportWrapper(torch.nn.Module):
         coeffs = self.base_model(x)
         return self.base_model.reconstruct(coeffs)
 
+
+# =================================================================
+# Training
+# =================================================================
+
 def run_training(
     x_path: str = "data/processed/X.npy",
     y_path: str = "data/processed/Y.npy",
@@ -221,8 +226,8 @@ if __name__ == "__main__":
         test_size=0.2,
         random_state=42,
         num_components=10,
-        epochs_adam=1000,
-        steps_lbfgs=100,
+        epochs_adam=3000,
+        steps_lbfgs=50,
         max_batch_size=15
     )
     

@@ -40,6 +40,7 @@ from src.train.loss.losses import (
     GaussianPhysicsInformedLoss,
     PCAPhysicsInformedLoss,
     PCAParamsPhysicsInformedLoss,
+    UndegradedPCAPhysicsInformedLoss
 )
 from src.train.training_functions.fixed_params_training_strategies import train_2stage_fixed
 from src.utils.extra.seed import set_seed
@@ -47,16 +48,18 @@ from src.utils.visualize_models_performance.export_utils import export_test_pred
 from src.utils.visualize_models_performance.metrics_eval import evaluate_test_set_from_file
 from src.utils.visualize_models_performance.plot_loss import plot_loss_evolution
 from src.utils.visualize_models_performance.plot_model_comparison import generate_plots_from_file
+from src.experiments.evaluation.plot_stellar_dependencies import evaluate_stellar_dependencies
 
 SUPPORTED_MODELS = {
     "residual_bicubic",
     "residual_gaussian",
     "pca_nn",
     "pca_params_nn",
+    "pca_undegraded_nn"
 }
 
 REQUIRES_STELLAR_PARAMS = {"pca_params_nn"}
-REQUIRES_PCA_BASIS = {"pca_nn", "pca_params_nn"}
+REQUIRES_PCA_BASIS = {"pca_nn", "pca_params_nn", "pca_undegraded_nn"}
 SUPPORTS_SIGMA = {"residual_gaussian"}
 
 
@@ -97,13 +100,13 @@ def load_stellar_parameters(params_dir: str) -> np.ndarray:
     return params.astype(np.float32)
 
 
-def compute_pca_basis(X: np.ndarray, Y: np.ndarray, num_components: int, random_state: int) -> Dict[str, np.ndarray]:
+def compute_pca_basis(X: np.ndarray, Y: np.ndarray, num_components: int, random_state: int, window_length: int = 5) -> Dict[str, np.ndarray]:
     """
     Compute a fold-specific PCA basis from the empirical ratio R = Y / X.
     """
     R_raw = Y / (X + 1e-15)
     R_clipped = np.clip(R_raw, 0.5, 2.0)
-    R_smooth = signal.savgol_filter(R_clipped, window_length=11, polyorder=2, axis=1, mode="nearest")
+    R_smooth = signal.savgol_filter(R_clipped, window_length=window_length, polyorder=2, axis=1, mode="nearest")
 
     pca = PCA(n_components=num_components, random_state=random_state)
     pca.fit(R_smooth)
@@ -167,6 +170,27 @@ def build_model_and_loss(
         )
         physics_criterion = lambda m, x, y, params=None: loss(m, x, y, params)
 
+    elif model_name == "pca_undegraded_nn":
+        if pca_basis is None or pca_mean is None:
+            raise ValueError("PCA basis and mean are required for pca_undegraded_nn models.")
+        
+        # Asegúrate de haber registrado 'pca_undegraded_nn' en tu get_pinn_model
+        model = get_pinn_model(
+            "pca_undegraded_nn",
+            input_dim=input_dim,
+            pca_basis=pca_basis,
+            pca_mean=pca_mean,
+        )
+        loss = UndegradedPCAPhysicsInformedLoss(
+            pca_basis=pca_basis,
+            pca_mean=pca_mean,
+            grad_weight=0.5,
+            huber_beta=0.05  # <-- Añade esto para controlarlo centralizadamente
+        )
+        
+        # Como la pérdida mejorada devuelve (total_loss, loss_flux, loss_grad), 
+        # nos quedamos solo con total_loss [0] para la retropropagación del trainer.
+        physics_criterion = lambda m, x, y, extra=None: loss(m, x, y)
     else:
         raise ValueError(f"Unsupported model_name: {model_name}")
 
@@ -216,6 +240,7 @@ def prepare_fold_dataset(
 
 def run_cross_validation(
     model_name: str,
+    dataset_mode: str = "all",
     x_path: str = "data/processed/X.npy",
     y_path: str = "data/processed/Y.npy",
     x_err_path: str = "data/processed/X_error.npy",
@@ -383,26 +408,34 @@ def run_cross_validation(
             num_samples=min(18, len(X_test_np)),
         )
 
+    evaluate_stellar_dependencies(
+        dataset_mode=dataset_mode,
+        nn_mode = model_name,
+        n_splits = n_splits, 
+        random_state = random_state
+    )   
+
     print(f"\n[✓] Cross-validation finished. Results saved to: {output_model_dir}")
 
 
 if __name__ == "__main__": 
     # Options: "all", "blue", "solar"
-    MODE = "blue"
+    MODE = "all"
 
-    # Options: "residual_bicubic", "residual_gaussian", "pca_nn", "pca_params_nn",
-    MODEL_NAME = "residual_bicubic"
+    # Options: "residual_bicubic", "residual_gaussian", "pca_nn", "pca_params_nn", "pca_degraded_nn"
+    MODEL_NAME = "pca_params_nn"
 
     run_cross_validation(
         model_name=MODEL_NAME,
-        x_path=f"data/processed/nn/{MODE}/X.npy",
-        y_path=f"data/processed/nn/{MODE}/Y.npy",
-        x_err_path=f"data/processed/nn/{MODE}/X_error.npy",
-        params_dir=f"data/processed/nn/{MODE}",
+        dataset_mode=MODE,
+        x_path=f"data/processed/nn_undegraded/{MODE}/X.npy",
+        y_path=f"data/processed/nn_undegraded/{MODE}/Y.npy",
+        x_err_path=f"data/processed/nn_undegraded/{MODE}/X_error.npy",
+        params_dir=f"data/processed/nn_undegraded/{MODE}",
         output_model_dir=f"results/models/{MODEL_NAME}_cv/{MODE}",
         n_splits=5,
         random_state=42,
-        num_components=5,
+        num_components=40,
         lambda_flux=1.0,
         lambda_smooth=1e-3,
         lambda_reg=1e-4,
