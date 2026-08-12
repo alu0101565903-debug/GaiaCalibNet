@@ -588,7 +588,7 @@ def run_cross_validation(
 
 if __name__ == "__main__": 
     # Configuration Options: "all", "blue", "solar"
-    MODE = "blue"
+    MODE = "all"
 
     # Configuration Options: "residual_bicubic", "residual_gaussian", "pca_nn", "pca_params_nn", "cheb_undegraded_nn"
     MODEL_NAME = "pca_params_nn"
@@ -600,16 +600,16 @@ if __name__ == "__main__":
         x_path=f"data/processed/nn/{MODE}/X.npy",
         y_path=f"data/processed/nn/{MODE}/Y.npy",
         x_err_path=f"data/processed/nn/{MODE}/X_error.npy",
-        params_dir=None,
-        output_model_dir=f"results/cross_validation/{MODEL_NAME}_none_cv/{MODE}",
+        params_dir=f"data/processed/nn/{MODE}",
+        output_model_dir=f"results/cross_validation/{MODEL_NAME}_cv/{MODE}",
         n_splits=5,
         random_state=42,
         num_components=5,
         lambda_flux=0.1,
         lambda_smooth=1e-5,
         lambda_reg=1e-4,
-        epochs_adam=2000,
-        steps_lbfgs=100,
+        epochs_adam=500,
+        steps_lbfgs=50,
         max_batch_size=16,
         effective_params=20
     )
