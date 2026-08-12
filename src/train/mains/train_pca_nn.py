@@ -1,13 +1,15 @@
 """
 Module: train_pca_nn.py
+Report Section: Chapter 5 Data Processing & Feature Engineering / Model Training
 
 PCA Physics-Informed Neural Network (PINN) Spectral Recalibration Module.
 
 This module orchestrates the end-to-end training pipeline for a PCA-based PINN 
 designed to predict a multiplicative correction factor R(lambda) for recalibrating 
 Gaia BP/RP optical spectra using CALSPEC references. It handles data loading, 
-dynamic PCA basis generation, model initialization, a two-stage training process 
-(Adam + L-BFGS), model saving, and triggering the export of inference results.
+dynamic leakage-free PCA basis generation, model initialization, a two-stage training 
+process (Adam + L-BFGS), model serialization, and triggering inference export, 
+quantitative evaluation, and performance visualization.
 """
 
 import os
@@ -19,32 +21,59 @@ from torch.utils.data import TensorDataset, DataLoader
 from sklearn.model_selection import train_test_split
 from sklearn.decomposition import PCA
 
-from src.utils.extra.seed import set_seed
 from src.models.pinn_architectures import PCASpectralPINN
-from src.train.loss.losses import PCAPhysicsInformedLoss 
+from src.train.loss.losses import PCAPhysicsInformedLoss
 from src.train.training_functions.fixed_training_strategies import train_2stage_fixed
-
+from src.utils.extra.seed import set_seed
 from src.utils.visualize_models_performance.export_utils import export_test_predictions
 from src.utils.visualize_models_performance.metrics_eval import evaluate_test_set_from_file
 from src.utils.visualize_models_performance.plot_model_comparison import generate_plots_from_file
 
+
 # =================================================================
 # EXPORT WRAPPER
 # =================================================================
+
 class PCAExportWrapper(torch.nn.Module):
     """
-    A wrapper class to adapt the PCA model's output for the export function.
-    Instead of just returning the PCA coefficients, it automatically applies 
-    the inverse transform to output the reconstructed correction factor R.
+    Export Wrapper for PCA-based PINN Models.
+
+    Adapts the base model's output interface for evaluation and inference pipelines. 
+    Instead of returning only the compressed PCA coefficients (c_i), this wrapper 
+    automatically applies the internal inverse transform (`reconstruct`) to output 
+    the full wavelength-dependent recalibration curve R(lambda).
+
+    Parameters
+    ----------
+    base_model : torch.nn.Module
+        The trained PCASpectralPINN instance.
     """
     def __init__(self, base_model):
         super().__init__()
         self.base_model = base_model
         
     def forward(self, x):
+        """
+        Extracts PCA coefficients and reconstructs the full correction factor R(lambda).
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input uncalibrated spectra tensor of shape `(batch_size, input_dim)`.
+
+        Returns
+        -------
+        torch.Tensor
+            Reconstructed full recalibration curve R(lambda) of shape `(batch_size, input_dim)`.
+        """
         # Extract the PCA coefficients and reconstruct R automatically
         coeffs = self.base_model(x)
         return self.base_model.reconstruct(coeffs)
+
+
+# =====================================================================
+# TRAINING ORCHESTRATION PIPELINE
+# =====================================================================
 
 def run_training(
     x_path: str = "data/processed/X.npy",
@@ -59,29 +88,45 @@ def run_training(
     max_batch_size: int = 32
 ) -> str:
     """
-    Handles data preparation, dynamic PCA basis calculation, PINN model training, 
-    and exporting inference results to disk.
+    Executes the end-to-end PCA-PINN training and export pipeline.
 
-    Args:
-    - x_path (str): Filepath to the input degraded spectra (X) numpy array.
-    - y_path (str): Filepath to the target reference spectra (Y) numpy array.
-    - x_err_path (str): Filepath to the input spectra errors numpy array.
-    - output_model_dir (str): Directory where the trained model and results will be saved.
-    - test_size (float): Proportion of the dataset to include in the test split.
-    - random_state (int): Seed used by the random number generator for reproducibility.
-    - num_components (int): Number of principal components for the PCA basis.
-    - epochs_adam (int): Number of epochs for the Adam optimizer phase.
-    - steps_lbfgs (int): Number of steps for the L-BFGS optimizer phase.
-    - max_batch_size (int): Maximum batch size for the DataLoader.
+    Handles data loading, train/test splitting, dynamic PCA basis construction 
+    (with ratio clipping and Savitzky-Golay filtering), model and loss initialization, 
+    two-stage optimization (Adam + L-BFGS), model serialization, and blind test export.
 
-    Returns:
-    - str: The filepath to the saved .npz file containing the test predictions.
+    Parameters
+    ----------
+    x_path : str, default="data/processed/X.npy"
+        Filepath to the input degraded Gaia spectra NumPy array.
+    y_path : str, default="data/processed/Y.npy"
+        Filepath to the target CALSPEC reference spectra NumPy array.
+    x_err_path : str, default="data/processed/X_error.npy"
+        Filepath to the input spectra uncertainty NumPy array.
+    output_model_dir : str, default="results/models/pca_nn"
+        Directory where model checkpoints and prediction results will be saved.
+    test_size : float, default=0.2
+        Proportion of the dataset allocated to the blind test split.
+    random_state : int, default=42
+        Random seed for reproducibility across splits and initialization.
+    num_components : int, default=10
+        Number of principal components for the PCA basis.
+    epochs_adam : int, default=5000
+        Number of epochs for the initial global Adam optimization phase.
+    steps_lbfgs : int, default=100
+        Number of steps for the secondary L-BFGS fine-tuning phase.
+    max_batch_size : int, default=32
+        Maximum batch size used by the training DataLoader.
+
+    Returns
+    -------
+    str
+        The file path to the saved `.npz` file containing the blind test predictions.
     """
     set_seed(random_state)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[>] Running PINN training on device: {device}")
 
-    # --- Data Loading ---
+    # --- 1. Data Loading ---
     if not os.path.exists(x_path) or not os.path.exists(y_path):
         raise FileNotFoundError(f"Verify that '{x_path}' and '{y_path}' are located in the correct path.")
 
@@ -89,7 +134,7 @@ def run_training(
     Y_np = np.load(y_path)
     X_err_np = np.load(x_err_path)
 
-    # --- Train / Test Split ---
+    # --- 2. Train / Test Split ---
     (
         X_train_np, X_test_np, 
         Y_train_np, Y_test_np, 
@@ -108,7 +153,7 @@ def run_training(
     dataset_train = TensorDataset(X_train_tensor, Y_train_tensor)
     batch_size = min(max_batch_size, len(dataset_train))
 
-    # Enforce reproducibility in the Dataloader
+    # Enforce strict reproducibility inside the DataLoader
     g = torch.Generator()
     g.manual_seed(random_state) 
     dataloader = DataLoader(dataset_train, batch_size=batch_size, shuffle=True, generator=g)
@@ -116,30 +161,27 @@ def run_training(
     X_full_train = X_train_tensor.to(device)
     Y_full_train = Y_train_tensor.to(device)
 
-    # --- Dynamic PCA Basis Generation ---
+    # --- 3. Dynamic PCA Basis Generation (Leakage-Free) ---
     print(f"[>] Computing PCA basis ({num_components} components) from training targets...")
 
-    # 1. Calculate the raw ratio R = Y / X
+    # Step A: Calculate raw ratio R = Y / X
     R_train_raw = Y_train_np / (X_train_np + 1e-15)
     
-    # 2. CRITICAL: Clip anomalous values. 
-    # Force max R to 2.0 and min to 0.5. 
-    # This removes infinities at the red edge that distort the PCA fit.
+    # Step B: Clip anomalous values to prevent infinities/outliers at spectrum edges (e.g., red edge)
     R_train_clipped = np.clip(R_train_raw, 0.5, 2.0)
     
-    # 3. Smooth with a SMALLER window (11 instead of 31).
-    # This prevents the Savitzky-Golay "drooping tail" effect at the spectrum edges.
+    # Step C: Smooth with a controlled Savitzky-Golay filter window to avoid edge drooping artifacts
     print("[>] Applying Savitzky-Golay filter to R before PCA fit...")
     R_train_smooth = signal.savgol_filter(R_train_clipped, window_length=11, polyorder=2, axis=1)
     
-    # 4. Fit the PCA on the cleaned, smoothed data
+    # Step D: Fit PCA decomposition on the cleaned training ratios
     pca = PCA(n_components=num_components, random_state=random_state)
     pca.fit(R_train_smooth)
     
     pca_basis_np = pca.components_  
     pca_mean_np = pca.mean_
     
-    # --- Model Initialization ---
+    # --- 4. Model & Loss Initialization ---
     num_channels = X_train_tensor.shape[1]
     
     # Initialize the network by passing the calculated basis AND the mean
@@ -155,7 +197,7 @@ def run_training(
         pca_mean=pca_mean_np
     ).to(device)
 
-    # --- Training ---
+    # --- 5. Two-Stage Training Optimization ---
     trained_model = train_2stage_fixed(
         model=model,
         dataloader=dataloader,
@@ -166,7 +208,7 @@ def run_training(
         steps_lbfgs=steps_lbfgs
     )
 
-    # --- Save Model ---
+    # --- 6. Model Serialization ---
     os.makedirs(output_model_dir, exist_ok=True)
     save_path = os.path.join(output_model_dir, "pinn_pca_recalibration.joblib")
     
@@ -180,7 +222,7 @@ def run_training(
     joblib.dump(export_model, save_path)
     print(f"\n[✓] Model successfully saved to: {save_path}")
 
-    # Wrap the trained model for inference/export
+    # --- 7. Export Blind Test Predictions (.npz) ---
     export_ready_model = PCAExportWrapper(trained_model)
     # =================================================================
 
@@ -191,7 +233,7 @@ def run_training(
     X_err_test_tensor = torch.tensor(X_err_test_np, dtype=torch.float32).to(device)
 
     export_test_predictions(
-        model=export_ready_model,  # <-- Pasamos el Wrapper, NO el modelo crudo
+        model=export_ready_model,  # <-- Pass the Wrapper, NOT the raw model
         X_tensor=X_test_tensor,
         Y_tensor=Y_test_tensor,
         X_err_tensor=X_err_test_tensor,
@@ -200,40 +242,43 @@ def run_training(
 
     return results_filepath
 
+
 # =====================================================================
 # MAIN PIPELINE EXECUTION
 # =====================================================================
+
 if __name__ == "__main__":
     set_seed(42)
 
-    mode = "all"  # change to "blue" for the blue set, or "solar" for the solar set
+    # Select dataset partition mode: "solar", "blue", or "all"
+    MODE = "all"
 
     # 1. Configure main directories
-    OUTPUT_MODEL_DIR = f"results/models/pca_nn/{mode}"
+    OUTPUT_MODEL_DIR = f"results/models/pca_nn/{MODE}"
     VIS_DIR = os.path.join(OUTPUT_MODEL_DIR, "comparison")
 
-    # 2. Execute Phase 1: Training and Exporting
+    # 2. Execute Phase 1: Training, Checkpointing, and Test Export
     npz_results_path = run_training(
-        x_path=f"data/processed/nn/{mode}/X.npy",
-        y_path=f"data/processed/nn/{mode}/Y.npy",
-        x_err_path=f"data/processed/nn/{mode}/X_error.npy",   
+        x_path=f"data/processed/nn/{MODE}/X.npy",
+        y_path=f"data/processed/nn/{MODE}/Y.npy",
+        x_err_path=f"data/processed/nn/{MODE}/X_error.npy",   
         output_model_dir=OUTPUT_MODEL_DIR,
         test_size=0.2,
         random_state=42,
         num_components=10,
-        epochs_adam=1000,
-        steps_lbfgs=100,
+        epochs_adam=3000,
+        steps_lbfgs=50,
         max_batch_size=15
     )
     
-    # 3. Execute Phase 2: Quantitative Evaluation 
+    # 3. Execute Phase 2: Quantitative Evaluation against CALSPEC references
     evaluate_test_set_from_file(
         input_filepath=npz_results_path,
         output_dir=OUTPUT_MODEL_DIR,
         num_knots=10
     )
 
-    # 4. Execute Phase 3: Visualization 
+    # 4. Execute Phase 3: Qualitative Performance Visualization & Comparison Plots
     generate_plots_from_file(
         input_filepath=npz_results_path,
         output_dir=VIS_DIR,

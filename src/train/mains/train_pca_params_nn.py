@@ -1,31 +1,21 @@
 """
 Module: train_pca_params_nn.py
-Report Section:
+Report Section: Chapter 5 Data Processing & Feature Engineering / Model Training
 
 Parameter-Conditioned PCA Physics-Informed Neural Network (PINN) Training Pipeline.
 
 This module orchestrates the end-to-end training and evaluation pipeline for a 
 stellar-parameter-conditioned PCA PINN architecture ("PCAParamsSpectralPINN"). 
 The model predicts expansion coefficients c_i for a dynamically generated PCA 
-basis, outputting a smooth multiplicative correction profile R(lambda) to recalibrate 
-Gaia BP/RP optical spectra against CALSPEC ground-truth references.
-
-Key Pipeline Steps:
-1. Data Ingestion & Stellar Feature Stacking:
-   Loads flux, uncertainties, and stellar physical properties (BP-RP color index, 
-   G magnitude, RUWE) and standardizes the physical parameters.
-2. Dynamic PCA Basis Generation:
-   Computes flux ratio residual vectors (Y / X), applies outlier clipping and 
-   Savitzky-Golay filtering, and fits a scikit-learn PCA basis.
-3. Two-Stage Optimization:
-   Trains the neural network using a hybrid 2-stage procedure: Adam gradient descent 
-   followed by L-BFGS second-order optimization ("train_2stage_fixed").
-4. Result Export & Evaluation:
-   Wraps the trained model to output full reconstructed curves R(lambda), exports test 
-   predictions to disk (.npz), and triggers evaluation metrics and comparison plots.
+basis, conditioned on auxiliary stellar physical parameters (BP-RP color index, 
+G magnitude, and RUWE astrometric quality factor). It outputs a smooth multiplicative 
+correction profile R(lambda) to recalibrate Gaia BP/RP optical spectra against 
+CALSPEC ground-truth references.
 """
 
 import os
+from pathlib import Path
+from typing import Optional, List
 import numpy as np
 import torch
 import joblib
@@ -43,79 +33,126 @@ from src.utils.visualize_models_performance.export_utils import export_test_pred
 from src.utils.visualize_models_performance.metrics_eval import evaluate_test_set_from_file
 from src.utils.visualize_models_performance.plot_model_comparison import generate_plots_from_file
 
+
 # =================================================================
 # EXPORT WRAPPER
 # =================================================================
 class PCAExportWrapper(torch.nn.Module):
     """
-    A wrapper class to adapt the PCA model's output for the export function.
-    Instead of just returning the PCA coefficients, it automatically applies 
-    the inverse transform to output the reconstructed correction factor R.
+    Export Wrapper for Parameter-Conditioned PCA-PINN Models.
+
+    Adapts the base model's forward interface for evaluation and inference pipelines 
+    when auxiliary stellar physical parameters are required. Instead of returning 
+    only the compressed coefficients, this wrapper automatically invokes the internal 
+    reconstruction mechanism to output the full wavelength-dependent recalibration curve R(lambda).
+
+    Parameters
+    ----------
+    base_model : torch.nn.Module
+        The trained PCAParamsSpectralPINN instance.
     """
     def __init__(self, base_model):
         super().__init__()
         self.base_model = base_model
         
-    def forward(self, x, stellar_params):
-        # Extract the PCA coefficients and reconstruct R automatically
-        coeffs = self.base_model(x, stellar_params)
+    def forward(self, x, params: torch.Tensor = None):
+        """
+        Extracts predicted PCA coefficients conditioned on stellar parameters 
+        and reconstructs the full correction curve R(lambda).
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input uncalibrated spectra tensor of shape `(batch_size, input_dim)`.
+        params : torch.Tensor, optional
+            Normalized stellar parameters tensor of shape `(batch_size, num_params)`.
+
+        Returns
+        -------
+        torch.Tensor
+            Reconstructed full recalibration curve R(lambda) of shape `(batch_size, input_dim)`.
+        """
+        coeffs = self.base_model(x, params)
         return self.base_model.reconstruct(coeffs)
+
+
+# =====================================================================
+# TRAINING ORCHESTRATION PIPELINE
+# =====================================================================
 
 def run_training(
     x_path: str = "data/processed/X.npy",
     y_path: str = "data/processed/Y.npy",
     x_err_path: str = "data/processed/X_error.npy", 
-    bp_rp_path: str = "data/processed/bp_rp.npy",
-    g_mags_path: str = "data/processed/G_mags.npy",
-    ruwe_path: str = "data/processed/ruwe.npy",
+    params_paths: Optional[List[str]] = None,
     output_model_dir: str = "results/models/pca_nn",
-    test_size: float = 0.2,
-    random_state: int = 42,
     num_components: int = 10,
+    lambda_smooth: float = 10,
+    lambda_reg: float = 1e-4,
     epochs_adam: int = 5000,
     steps_lbfgs: int = 100,
-    max_batch_size: int = 32
+    max_batch_size: int = 16,
+    test_size: float = 0.2,
+    random_state: int = 42
 ) -> str:
     """
-    Handles data preparation, dynamic PCA basis calculation, PINN model training, 
-    and exporting inference results to disk.
+    Executes the end-to-end parameter-conditioned PCA-PINN training and export pipeline.
 
-    Args:
-    - x_path (str): Filepath to the input degraded spectra (X) numpy array.
-    - y_path (str): Filepath to the target reference spectra (Y) numpy array.
-    - x_err_path (str): Filepath to the input spectra errors numpy array.
-    - bp_rp_path (str): Filepath to the bp_rp stellar parameters numpy array.
-    - g_mags_path (str): Filepath to the G_mags stellar parameters numpy array.
-    - ruwe_path (str): Filepath to the ruwe stellar parameters numpy array.
-    - output_model_dir (str): Directory where the trained model and results will be saved.
-    - test_size (float): Proportion of the dataset to include in the test split.
-    - random_state (int): Seed used by the random number generator for reproducibility.
-    - num_components (int): Number of principal components for the PCA basis.
-    - epochs_adam (int): Number of epochs for the Adam optimizer phase.
-    - steps_lbfgs (int): Number of steps for the L-BFGS optimizer phase.
-    - max_batch_size (int): Maximum batch size for the DataLoader.
+    Handles stellar parameter ingestion and standardization, leakage-free dynamic 
+    PCA basis extraction, multi-objective physics-informed loss setup, hybrid 
+    two-stage optimization (Adam + L-BFGS), serialization of scaling statistics and checkpoints, 
+    and blind test inference export.
 
-    Returns:
-    - str: The filepath to the saved .npz file containing the test predictions.
+    Parameters
+    ----------
+    x_path : str, default="data/processed/X.npy"
+        Filepath to input degraded Gaia spectra NumPy array.
+    y_path : str, default="data/processed/Y.npy"
+        Filepath to target CALSPEC reference spectra NumPy array.
+    x_err_path : str, default="data/processed/X_error.npy"
+        Filepath to input spectral uncertainty NumPy array.
+    params_paths : List[str], optional
+        List of file paths for individual auxiliary stellar parameter arrays.
+    output_model_dir : str, default="results/models/pca_nn"
+        Directory where model checkpoints, loss histories, and outputs are saved.
+    num_components : int, default=10
+        Number of principal components for the dynamic PCA basis.
+    lambda_smooth : float, default=10.0
+        Weighting factor for the second-derivative curvature penalty.
+    lambda_reg : float, default=1e-4
+        Weighting factor for L2 regularization on higher-order PCA coefficients.
+    epochs_adam : int, default=5000
+        Number of epochs for the global Adam optimization phase.
+    steps_lbfgs : int, default=100
+        Number of steps for the secondary L-BFGS fine-tuning phase.
+    max_batch_size : int, default=16
+        Maximum batch size for the training DataLoader.
+    test_size : float, default=0.2
+        Proportion of dataset allocated to the blind test split.
+    random_state : int, default=42
+        Random seed for reproducibility across splits and initialization.
+
+    Returns
+    -------
+    str
+        File path to the saved `.npz` file containing blind test predictions.
     """
     set_seed(random_state)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[>] Running PINN training on device: {device}")
 
-    # --- Data Loading ---
-    if not os.path.exists(x_path) or not os.path.exists(y_path):
-        raise FileNotFoundError(f"Verify that '{x_path}' and '{y_path}' are located in the correct path.")
-
+    # --- 1. Data Ingestion & Stellar Feature Stacking ---
     X_np = np.load(x_path)
     Y_np = np.load(y_path)
     X_err_np = np.load(x_err_path)
 
-    bp_rp_np = np.load(bp_rp_path)
-    g_mags_np = np.load(g_mags_path)
-    ruwe_np = np.load(ruwe_path)
-    stellar_params_np = np.column_stack([bp_rp_np, g_mags_np, ruwe_np])
+    if params_paths is not None:
+        params_list = [np.load(p) for p in params_paths]
+        stellar_params_np = np.column_stack(params_list)
+    else:
+        raise ValueError("Parameter paths must be provided for PCAParamsSpectralPINN training.")
 
-    # --- Train / Test Split ---
+    # --- 2. Train / Test Split ---
     (
         X_train_np, X_test_np, 
         Y_train_np, Y_test_np, 
@@ -129,12 +166,14 @@ def run_training(
     print(f"[>] Training samples: {X_train_np.shape[0]}")
     print(f"[>] Blind test samples: {X_test_np.shape[0]}")
 
+    # --- 3. Stellar Parameter Standardization ---
     mean_params = np.mean(params_train_np, axis=0)
     std_params = np.std(params_train_np, axis=0) + 1e-8
 
     params_train_norm = (params_train_np - mean_params) / std_params
     params_test_norm = (params_test_np - mean_params) / std_params
 
+    # Tensor conversion
     X_train_tensor = torch.tensor(X_train_np, dtype=torch.float32)
     Y_train_tensor = torch.tensor(Y_train_np, dtype=torch.float32)
     params_train_tensor = torch.tensor(params_train_norm, dtype=torch.float32)
@@ -142,7 +181,7 @@ def run_training(
     dataset_train = TensorDataset(X_train_tensor, Y_train_tensor, params_train_tensor)
     batch_size = min(max_batch_size, len(dataset_train))
 
-    # Enforce reproducibility in the Dataloader
+    # Reproducible DataLoader configuration
     g = torch.Generator()
     g.manual_seed(random_state) 
     dataloader = DataLoader(dataset_train, batch_size=batch_size, shuffle=True, generator=g)
@@ -151,51 +190,48 @@ def run_training(
     Y_full_train = Y_train_tensor.to(device)
     params_full_train = params_train_tensor.to(device) 
 
-    # --- Dynamic PCA Basis Generation ---
+    # --- 4. Dynamic PCA Basis Generation (Leakage-Free) ---
     print(f"[>] Computing PCA basis ({num_components} components) from training targets...")
 
-    # 1. Calculate the raw ratio R = Y / X
+    # Step A: Compute raw ratio R = Y / X
     R_train_raw = Y_train_np / (X_train_np + 1e-15)
     
-    # 2. CRITICAL: Clip anomalous values. 
-    # Force max R to 2.0 and min to 0.5. 
-    # This removes infinities at the red edge that distort the PCA fit.
+    # Step B: Clip extreme ratio outliers to prevent edge divergence (e.g., red-edge blowup)
     R_train_clipped = np.clip(R_train_raw, 0.5, 2.0)
     
-    # 3. Smooth with a SMALLER window (11 instead of 31).
-    # This prevents the Savitzky-Golay "drooping tail" effect at the spectrum edges.
+    # Step C: Smooth with a controlled Savitzky-Golay filter window
     print("[>] Applying Savitzky-Golay filter to R before PCA fit...")
     R_train_smooth = signal.savgol_filter(R_train_clipped, window_length=11, polyorder=2, axis=1)
     
-    # 4. Fit the PCA on the cleaned, smoothed data
+    # Step D: Fit PCA decomposition on training ratios
     pca = PCA(n_components=num_components, random_state=random_state)
     pca.fit(R_train_smooth)
     
     pca_basis_np = pca.components_  
     pca_mean_np = pca.mean_
     
-    # --- Model Initialization ---
+    # --- 5. Model & Physics Loss Initialization ---
     num_channels = X_train_tensor.shape[1]
-    num_stellar_params = params_train_tensor.shape[1] # 3 (bp_rp, g_mags, ruwe)
+    num_params = params_train_tensor.shape[1] # e.g.: 3 (bp_rp, g_mags, ruwe)
     
     # Initialize the network by passing the calculated basis AND the mean
     model = PCAParamsSpectralPINN(
         input_dim=num_channels, 
         pca_basis=pca_basis_np,
         pca_mean=pca_mean_np,
-        num_stellar_params=num_stellar_params
+        num_params=num_params
     ).to(device)
     
     # Initialize the physics loss function with the same basis and mean
     physics_criterion = PCAParamsPhysicsInformedLoss(
         pca_basis=pca_basis_np,
         pca_mean=pca_mean_np,
-        lambda_smooth=10,
-        lambda_reg=1e-4
+        lambda_smooth=lambda_smooth,
+        lambda_reg=lambda_reg
     ).to(device)
 
-    # --- Training ---
-    trained_model, _ = train_2stage_fixed(
+    # --- 6. Two-Stage Optimization (Adam + L-BFGS) ---
+    trained_model, loss_history = train_2stage_fixed(
         model=model,
         dataloader=dataloader,
         X_full=X_full_train,
@@ -206,32 +242,36 @@ def run_training(
         steps_lbfgs=steps_lbfgs
     )
 
-    # --- Save Model ---
+    # --- 7. Model Serialization ---
     os.makedirs(output_model_dir, exist_ok=True)
     save_path = os.path.join(output_model_dir, "pinn_pca_recalibration.joblib")
     
     export_model = {
         "model_state_dict": trained_model.state_dict(),
+        "history": loss_history,
         "input_dim": num_channels,
         "num_components": num_components,
+        "num_params": num_params,
         "pca_basis": pca_basis_np,
-        "pca_mean": pca_mean_np 
+        "pca_mean": pca_mean_np,
+        "mean_params": mean_params,
+        "std_params": std_params
     }
+
     joblib.dump(export_model, save_path)
     print(f"\n[✓] Model successfully saved to: {save_path}")
 
-    # Wrap the trained model for inference/export
+    # --- 8. Export Blind Test Predictions (.npz) ---
     export_ready_model = PCAExportWrapper(trained_model)
-
-    # --- Export Predictions to Disk (.npz) ---
     results_filepath = os.path.join(output_model_dir, "test_predictions_final.npz")
+
     X_test_tensor = torch.tensor(X_test_np, dtype=torch.float32).to(device)
     Y_test_tensor = torch.tensor(Y_test_np, dtype=torch.float32).to(device)
     X_err_test_tensor = torch.tensor(X_err_test_np, dtype=torch.float32).to(device)
     params_test_tensor = torch.tensor(params_test_norm, dtype=torch.float32).to(device)
 
     export_test_predictions(
-        model=export_ready_model,  # <-- Pasamos el Wrapper, NO el modelo crudo
+        model=export_ready_model,  # <-- Pass the Wrapper, NOT the raw model
         X_tensor=X_test_tensor,
         Y_tensor=Y_test_tensor,
         X_err_tensor=X_err_test_tensor,
@@ -242,42 +282,51 @@ def run_training(
     return results_filepath
 
 
+# =====================================================================
+# MAIN PIPELINE EXECUTION
+# =====================================================================
+
 if __name__ == "__main__":
     set_seed(42)
 
+    # Define experiment mode and output directories
     mode = "all"  # change to "blue" for the blue set, or "solar" for the solar set
-
-    # 1. Configure main directories
     OUTPUT_MODEL_DIR = f"results/models/pca_params_nn/{mode}"
     VIS_DIR = os.path.join(OUTPUT_MODEL_DIR, "comparison")
 
-    # 2. Execute Phase 1: Training and Exporting
+    BASE_DATA_DIR = f"data/processed/nn/{mode}"
+    stellar_params = [
+        os.path.join(BASE_DATA_DIR, "G_mags.npy"),
+        os.path.join(BASE_DATA_DIR, "bp_rp.npy"),
+        os.path.join(BASE_DATA_DIR, "ruwe.npy")
+    ]
+
+    # Execute the training pipeline with specified hyperparameters
     npz_results_path = run_training(
-        x_path=f"data/processed/nn/{mode}/X.npy",
-        y_path=f"data/processed/nn/{mode}/Y.npy",
-        x_err_path=f"data/processed/nn/{mode}/X_error.npy",
-        bp_rp_path=f"data/processed/nn/{mode}/bp_rp.npy",
-        g_mags_path=f"data/processed/nn/{mode}/G_mags.npy",
-        ruwe_path=f"data/processed/nn/{mode}/ruwe.npy",
-        output_model_dir=OUTPUT_MODEL_DIR,
-        test_size=0.2,
-        random_state=42,
-        num_components=5,
-        epochs_adam=1000,
-        steps_lbfgs=100,
-        max_batch_size=15
+        x_path = os.path.join(BASE_DATA_DIR, "X.npy"),
+        y_path = os.path.join(BASE_DATA_DIR, "Y.npy"),
+        x_err_path = os.path.join(BASE_DATA_DIR, "X_error.npy"),
+        params_paths = stellar_params,  # <--- Parameter injection
+        output_model_dir = OUTPUT_MODEL_DIR,
+        num_components = 15,
+        lambda_smooth = 10,
+        lambda_reg = 1e-4,
+        epochs_adam = 1000,
+        steps_lbfgs = 100,
+        max_batch_size = 15,
+        test_size = 0.2,
+        random_state = 42
     )
     
-    # 3. Execute Phase 2: Quantitative Evaluation 
+    # Run evaluation metrics and generate visual comparison plots
     evaluate_test_set_from_file(
-        input_filepath=npz_results_path,
-        output_dir=OUTPUT_MODEL_DIR,
-        num_knots=10
+        input_filepath = npz_results_path,
+        output_dir = OUTPUT_MODEL_DIR,
+        num_knots = 10
     )
 
-    # 4. Execute Phase 3: Visualization 
     generate_plots_from_file(
-        input_filepath=npz_results_path,
-        output_dir=VIS_DIR,
-        num_samples=18
+        input_filepath = npz_results_path,
+        output_dir = VIS_DIR,
+        num_samples = 18
     )
