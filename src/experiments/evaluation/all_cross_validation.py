@@ -414,7 +414,7 @@ def run_cross_validation(
 
     # Conditionally attempt to load stellar parameters if required by the target model architecture
     params_np = None
-    if model_name in REQUIRES_STELLAR_PARAMS:
+    if model_name in REQUIRES_STELLAR_PARAMS and params_dir is not None:
         try:
             params_np = load_stellar_parameters(params_dir)
         except FileNotFoundError:
@@ -588,27 +588,27 @@ def run_cross_validation(
 
 if __name__ == "__main__": 
     # Configuration Options: "all", "blue", "solar"
-    MODE = "all"
+    MODE = "blue"
 
     # Configuration Options: "residual_bicubic", "residual_gaussian", "pca_nn", "pca_params_nn", "cheb_undegraded_nn"
-    MODEL_NAME = "cheb_undegraded_nn"
+    MODEL_NAME = "pca_params_nn"
 
     # Trigger the full cross-validation pipeline execution sequence
     run_cross_validation(
         model_name=MODEL_NAME,
         dataset_mode=MODE,
-        x_path=f"data/processed/nn_undegraded/{MODE}/X.npy",
-        y_path=f"data/processed/nn_undegraded/{MODE}/Y.npy",
-        x_err_path=f"data/processed/nn_undegraded/{MODE}/X_error.npy",
-        params_dir=f"data/processed/nn_undegraded/{MODE}",
-        output_model_dir=f"results/cross_validation/{MODEL_NAME}_cv/{MODE}",
+        x_path=f"data/processed/nn/{MODE}/X.npy",
+        y_path=f"data/processed/nn/{MODE}/Y.npy",
+        x_err_path=f"data/processed/nn/{MODE}/X_error.npy",
+        params_dir=None,
+        output_model_dir=f"results/cross_validation/{MODEL_NAME}_none_cv/{MODE}",
         n_splits=5,
         random_state=42,
-        num_components=40,
+        num_components=5,
         lambda_flux=0.1,
-        lambda_smooth=1e-3,
+        lambda_smooth=1e-5,
         lambda_reg=1e-4,
-        epochs_adam=1000,
+        epochs_adam=2000,
         steps_lbfgs=100,
         max_batch_size=16,
         effective_params=20
