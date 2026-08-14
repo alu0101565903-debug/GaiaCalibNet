@@ -1,0 +1,23 @@
+Zero-Degradation Response Test: pca_nn
+Weights path: results/models/pca_nn/all/pinn_pca_recalibration.joblib
+Reference input shape: (85, 300)
+
+R(lambda) response metrics:
+  mean(R) = 0.998221
+  std(R) = 0.028380
+  MAE(|R - 1|) = 0.023028
+  MSE(|R - 1|) = 8.086021e-04
+  fraction within 2% = 46.36%
+  fraction within 5% = 94.80%
+
+Flux reconstruction metrics:
+  peak-normalized MAE = 0.0272%
+  normalized bias = 0.0179%
+  cosine similarity = 0.999926
+
+Band-relative errors:
+  blue  = 0.0000%
+  green = 0.0000%
+  red   = 0.0000%
+
+Saved compressed results to: results/evaluation/zero_degradation/pca_nn/all/pca_nn_zero_degradation_metrics.npz

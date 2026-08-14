@@ -1,0 +1,29 @@
+
+\begin{table}[htpb]
+\centering
+\caption{Quantitative Evaluation Results of the PINN Model (Blind Test: 10 stars)}
+\label{tab:pinn_evaluation}
+\begin{tabular}{lcll}
+\hline
+\textbf{Metric} & \textbf{Value} & \textbf{Objective} & \textbf{Utility} \\
+\hline
+Peak-Normalized MAE & 0.123\% & 0.0\% & Global precision independent of magnitude \\
+Normalized Std. Dev. (NSTD) & 0.157\% & 0.0\% & Statistical dispersion of flux residuals \\
+Reduced $\chi^2_\nu$ & 0.808 & $\approx 1.0$ & Statistical validity relative to noise $\sigma_i$ \\
+Normalized Bias (MBE) & -0.001\% & 0.0\% & Integrated photometric flux conservation \\
+Cosine Similarity & 0.99991 & 1.00000 & Macroscopic continuum morphological fidelity \\
+\hline
+\multicolumn{4}{c}{\textbf{Relative Error by Band}} \\
+\hline
+Blue Band (< 500 nm) & 0.127\% & Minimum & Regional response in Gaia BP photometer \\
+Green Band (500 - 700 nm) & 0.125\% & Minimum & Regional response in central optical band \\
+Red Band (> 700 nm) & 0.121\% & Minimum & Regional response in Gaia RP photometer \\
+\hline
+\multicolumn{4}{c}{\textbf{Photometric Bias by Band ($\text{Bias}_{\text{norm}}$)}} \\
+\hline
+Blue Band Bias & -0.115\% & 0.0\% & Energy conservation in Gaia BP photometer \\
+Green Band Bias & +0.324\% & 0.0\% & Energy conservation in central optical band \\
+Red Band Bias & -0.405\% & 0.0\% & Energy conservation in Gaia RP photometer \\
+\hline
+\end{tabular}
+\end{table}
