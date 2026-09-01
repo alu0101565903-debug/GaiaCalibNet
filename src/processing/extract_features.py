@@ -2,85 +2,110 @@
 Module: extract_features.py
 Report Section: Chapter 5 Data Processing & Feature Engineering
 
-This script isolates the 5 key scalar features from the Gaia DR3 crossmatch
-catalog (parallax, pmra, pmdec, phot_g_mean_mag, and bp_rp). It handles
-missing-value imputation, performs a simple data quality audit, and exports the
-final feature matrix as a float32 NumPy binary.
+This script isolates 5 key scalar astrometric and photometric features from the Gaia DR3 
+crossmatch catalog (parallax, pmra, pmdec, phot_g_mean_mag, and bp_rp). It handles 
+missing-value imputation via column medians, performs a data quality audit, and exports 
+the final feature matrix as a float32 NumPy binary (.npy) file for PyTorch model training.
 """
 
 import os
+from pathlib import Path
+from typing import List, Union
+
 import numpy as np
 import pandas as pd
 
-def extract_gaia_features(csv_path: str, output_path: str):
-    """Extract and preprocess Gaia scalar features for feature-based training.
 
-    This function reads the processed crossmatch catalog, validates the
-    required Gaia feature columns, coerces values to numeric form, imputes any
-    missing entries with the median value per feature, and writes the result as
-    a float32 NumPy array.
+def extract_gaia_features(
+    csv_path: Union[str, Path],
+    output_path: Union[str, Path]
+) -> None:
+    """
+    Extract and preprocess Gaia scalar features for feature-based model training.
+
+    Reads the crossmatch catalog, validates required Gaia astrometric and photometric 
+    columns, coerces values to numerical format, imputes missing entries using 
+    feature-wise medians, and exports a float32 NumPy feature matrix.
+
+    Parameters
+    ----------
+    csv_path : str or Path
+        Path to the input processed crossmatch catalog CSV file.
+    output_path : str or Path
+        Target file path to save the output NumPy binary array (.npy).
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    Target feature vector layout:
+    [parallax, pmra, pmdec, phot_g_mean_mag, bp_rp]
     """
     print("=" * 60)
     print("[5.1] EXTRACTING GAIA SCALAR ASTROMETRIC & PHOTOMETRIC FEATURES")
     print("=" * 60)
-    
-    if not os.path.exists(csv_path):
-        print(f"[!] ERROR: Not able to find {csv_path}")
+
+    csv_file = Path(csv_path)
+    output_file = Path(output_path)
+
+    if not csv_file.exists():
+        print(f"[!] ERROR: Not able to find catalog at {csv_path}")
         return
 
-    # Read the crossmatch catalog, converting common missing-value markers to NaN.
-    df = pd.read_csv(csv_path, na_values=["--", "-", "NA", "N/A", ""])
+    # Read catalog and convert common missing-value representations to NaN
+    df = pd.read_csv(csv_file, na_values=["--", "-", "NA", "N/A", ""])
 
-    # Select the scalar features used by the feature-based model branch.
-    feature_cols = ["parallax", "pmra", "pmdec", "phot_g_mean_mag", "bp_rp"]
+    # Select the scalar features used by the feature-based model branch
+    feature_cols: List[str] = ["parallax", "pmra", "pmdec", "phot_g_mean_mag", "bp_rp"]
 
-    # Ensure all required metadata columns exist
-    missing_cols = [c for c in feature_cols if c not in df.columns]
+    # Verify column presence
+    missing_cols = [col for col in feature_cols if col not in df.columns]
     if missing_cols:
         print(f"[!] ERROR: Missing expected columns in {csv_path}: {missing_cols}")
         return
 
     print("-> Cohering columns to numeric vectors and scanning for missing data...")
 
-    # Convert all feature columns to numeric values, setting invalid entries to NaN.
+    # Convert feature columns to numeric vectors, mapping unparseable values to NaN
     for col in feature_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Data quality audit: report how many NaNs remain after coercion.
+    # Data quality audit
     nan_counts = df[feature_cols].isna().sum()
-    total_nans = nan_counts.sum()
+    total_nans = int(nan_counts.sum())
+
     if total_nans > 0:
-        print("\n[i] Missing Values Detected (will be imputed with feature median):")
+        print("\n[i] Missing Values Detected (imputing with feature median):")
         for col, count in nan_counts.items():
             if count > 0:
                 print(f"    - {col}: {count} missing values")
     else:
         print("[✓] Matrix is completely dense. No NaNs detected.")
 
-    # Impute missing values using the median of each feature column.
+    # Perform column-wise median imputation
     medians = df[feature_cols].median()
-
-    # Enforce float32 precision for efficient PyTorch compatibility.
     X_features = df[feature_cols].fillna(medians).values.astype(np.float32)
 
-    # Create the target directory if it does not exist.
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    # Export array to disk
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    np.save(output_file, X_features)
 
-    np.save(output_path, X_features)
-    
     print("\n" + "=" * 40)
-    print("       FEATURE EXTRACTION SUMMARY")
+    print("        FEATURE EXTRACTION SUMMARY")
     print("=" * 40)
     print(f"Isolated Features Vector Layout: {feature_cols}")
     print(f"Matrix Dimension Saved (X)      : {X_features.shape}")
     print(f"Memory Footprint                : {X_features.nbytes / 1024:.2f} KB")
     print(f"Data Type                       : {X_features.dtype}")
-    print(f"Output saved at location        : {output_path}")
+    print(f"Output saved at location        : {output_file}")
     print("=" * 60 + "\n")
 
+
 if __name__ == "__main__":
-    # Path routing aligned with Section 3.2 data management architecture
+    # Alignment with pipeline data management structure
     input_csv = "data/processed/crossmatch_catalog.csv"
     output_npy = "data/processed/X_features.npy"
-    
+
     extract_gaia_features(input_csv, output_npy)

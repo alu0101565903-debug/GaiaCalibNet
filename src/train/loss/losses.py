@@ -22,13 +22,21 @@ Loss Architectures:
    references using frozen PCA basis vectors.
 4. PCAParamsPhysicsInformedLoss:
    Extended PCA loss supporting physical stellar parameter conditioning, 
-   second-derivative curvature penalties, and L2 regularization on higher-order 
-   PCA components (c_i, i >= 1).
-5. UndegradedChebyshevPhysicsInformedLoss:
+   integrated flux anchor constraints, and curvature penalties.
+5. SobolevPINNLoss:
+   Sobolev-space objective combining Huber reconstruction error, first-derivative 
+   spectral line alignment, and instrumental response curvature regularization.
+6. AdaptivePhysicsLoss:
+   Wavelength-weighted adaptive physics loss with UV/IR region emphasis 
+   and curvature smoothing penalties.
+7. UltimateSpectralPINNLoss:
+   Comprehensive multi-objective loss integrating Huber reconstruction, Sobolev derivative 
+   alignment, bolometric integrated flux anchoring, and second-derivative response curvature regularization.
+8. UndegradedChebyshevPhysicsInformedLoss:
    Loss function tailored for dual-branch PINNs, applying Smooth L1 fitting on 
    scaled flux, second-derivative curvature constraints strictly on the Chebyshev global 
    branch, and L1 regularization on local residual peak corrections.
-6. UndegradedPCAPhysicsInformedLoss:
+9. UndegradedPCAPhysicsInformedLoss:
    Loss function for PCA-based undegraded PINNs, balancing Smooth L1 reconstruction 
    with selective L2 penalization on higher-order coefficients to suppress high-frequency noise.
 """
@@ -71,7 +79,7 @@ class BiCubicPhysicsInformedLoss(nn.Module):
         Y: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Computes the total physics-informed loss for a given forward pass.
+        Compute the total physics-informed loss for a given forward pass.
 
         Parameters
         ----------
@@ -143,7 +151,7 @@ class GaussianPhysicsInformedLoss(nn.Module):
         Sigma: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Computes the multi-component physics-informed loss.
+        Compute the multi-component physics-informed loss.
 
         Parameters
         ----------
@@ -186,7 +194,7 @@ class GaussianPhysicsInformedLoss(nn.Module):
         # Component C: Shape Preservation (penalty on the 1st and 2nd derivatives)
         # 1. Penalize high-frequency noise (differences between adjacent pixels)
         d1_R = R_pred[:, 1:] - R_pred[:, :-1]
-        loss_tv = torch.mean(torch.abs(d1_R)) # Use L1 (abs) or L2 (**2) norm
+        loss_tv = torch.mean(torch.abs(d1_R))  # Use L1 (abs) or L2 (**2) norm
         
         # 2. Original curvature penalty (second derivative)
         d2_R = R_pred[:, 2:] - 2 * R_pred[:, 1:-1] + R_pred[:, :-2]
@@ -248,7 +256,7 @@ class PCAPhysicsInformedLoss(nn.Module):
         y_target: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Computes relative flux loss for PCA coefficient prediction models.
+        Compute relative flux loss for PCA coefficient prediction models.
 
         Parameters
         ----------
@@ -292,47 +300,32 @@ class PCAPhysicsInformedLoss(nn.Module):
 
 
 # =====================================================================
-# 4. PARAMETER-CONDITIONED PCA LOSS
+# 4. PARAMETER-CONDITIONED PCA LOSS & VARIANTS
 # =====================================================================
 
 class PCAParamsPhysicsInformedLoss(nn.Module):
     """
-    Physics-Informed Loss Function for Parameter-Conditioned PCA PINNs.
+    Parameter-Conditioned PCA Physics-Informed Loss Function.
 
-    Extends standard PCA loss by evaluating second-derivative curvature penalties 
-    and applying selective L2 regularization on higher-order PCA coefficients 
-    (c_i, i >= 1) to enforce minimal deviation from identity scaling (R ≈ 1).
+    Evaluates relative L1 flux error, enforces integrated total flux scaling anchors, 
+    and applies second-derivative curvature smoothness penalties.
 
     Parameters
     ----------
-    pca_basis : Union[torch.Tensor, np.ndarray]
-        PCA component basis matrix of shape `(num_components, input_dim)`.
-    pca_mean : Union[torch.Tensor, np.ndarray]
-        PCA mean residual vector of shape `(input_dim,)`.
-    lambda_smooth : float, default=1e-3
-        Weighting factor for the second-derivative curvature penalty.
+    lambda_smooth : float, default=10.0
+        Weighting coefficient for the second-derivative curvature penalty.
     lambda_reg : float, default=1e-4
-        Weighting factor for the L2 regularization penalty on non-zero PCA components.
+        Regularization weight parameter.
+    **kwargs
+        Additional keyword arguments for backward compatibility.
     """
     def __init__(
         self, 
-        pca_basis: Union[torch.Tensor, np.ndarray], 
-        pca_mean: Union[torch.Tensor, np.ndarray], 
-        lambda_smooth: float = 1e-3, 
-        lambda_reg: float = 1e-4
+        lambda_smooth: float = 10.0, 
+        lambda_reg: float = 1e-4, 
+        **kwargs
     ) -> None:
-        super(PCAParamsPhysicsInformedLoss, self).__init__()
-        
-        # Convert to PyTorch tensors if they are numpy arrays
-        if not isinstance(pca_basis, torch.Tensor):
-            pca_basis = torch.tensor(pca_basis, dtype=torch.float32)
-        if not isinstance(pca_mean, torch.Tensor):
-            pca_mean = torch.tensor(pca_mean, dtype=torch.float32)
-            
-        # Register basis and mean as buffers (non-trainable parameters that move with the device)
-        self.register_buffer("pca_basis", pca_basis.float())
-        self.register_buffer("pca_mean", pca_mean.float())
-
+        super().__init__()
         self.lambda_smooth = lambda_smooth
         self.lambda_reg = lambda_reg
 
@@ -341,71 +334,375 @@ class PCAParamsPhysicsInformedLoss(nn.Module):
         model: nn.Module, 
         x_input: torch.Tensor, 
         y_target: torch.Tensor, 
-        params: Optional[torch.Tensor] = None
+        params: Optional[torch.Tensor] = None, 
+        **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Computes total loss with curvature constraints and coefficient priors.
+        Compute total physics-informed loss for parameter-conditioned models.
 
         Parameters
         ----------
         model : nn.Module
-            The PCASpectralPINN model instance.
+            Model predicting PCA expansion coefficients.
         x_input : torch.Tensor
-            Observed Gaia spectra tensor of shape `(batch_size, input_dim)`.
+            Observed input spectra tensor of shape `(batch_size, input_dim)`.
         y_target : torch.Tensor
-            CALSPEC reference spectra tensor of shape `(batch_size, input_dim)`.
+            Reference CALSPEC spectra tensor of shape `(batch_size, input_dim)`.
         params : torch.Tensor, optional
-            Normalized auxiliary stellar parameters of shape `(batch_size, num_params)`.
+            Auxiliary stellar parameter features of shape `(batch_size, num_params)`.
 
         Returns
         -------
         Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
             A tuple containing:
-            - total_loss : Aggregated weighted loss tensor.
-            - loss_flux : Clamped relative flux error component.
-            - loss_smooth : Second-derivative curvature penalty component.
+            - total_loss : Aggregated loss value.
+            - loss_flux : Relative L1 spectral flux error.
+            - loss_smooth : Second-derivative curvature smoothness penalty.
         """
-        # 1. Extract the predicted c_i coefficients from the network
-        if params is not None:
-            pca_coeffs = model(x_input, params)
-        else:
-            pca_coeffs = model(x_input)
+        pca_coeffs = model(x_input, params)
+        R_pred = model.reconstruct(pca_coeffs)
         
-        # 2. Physical reconstruction of the correction curve: R(lambda) = Mean + sum(c_i * PC_i)
-        if hasattr(model, "reconstruct"):
-            R = model.reconstruct(pca_coeffs)
-        else:
-            delta_R = torch.matmul(pca_coeffs, self.pca_basis)
-            R = self.pca_mean + delta_R
-            R = torch.clamp(R, min=0.3, max=3.0)
+        calibrated_spec = x_input * R_pred
         
-        # 3. Apply the multiplicative correction to the Gaia flux
-        calibrated_spec = x_input * R
+        # 1. Spectral loss (Relative L1 norm to suppress outlier sensitivity near absorption lines)
+        loss_flux = torch.mean(torch.abs(calibrated_spec - y_target) / (y_target + 1e-12))
         
-        # 4. RELATIVE LOSS (Percentage Error)
-        # Extrar maximun value to avoid division by zero in regions of deep absorption lines
-        y_max = torch.max(y_target, dim=1, keepdim=True)[0]
-        # Normalize by y_max to make the error independent of the magnitude scale (~1e-14)
-        denominator = torch.clamp(y_target, min=0.05 * y_max)
-        epsilon = 0.01 * y_max
-        rel_error = (calibrated_spec - y_target) / (y_max + epsilon)
-        loss_flux = torch.mean(rel_error ** 2)
+        # 2. SCALE ANCHOR (Prevents vertical intensity collapse)
+        # Forces total integrated flux prediction to match target
+        area_pred = torch.sum(calibrated_spec, dim=1)
+        area_target = torch.sum(y_target, dim=1)
+        loss_anchor = torch.mean(torch.abs(area_pred - area_target) / (area_target + 1e-12))
         
-        # 5. Dummy smoothness loss to maintain signature compatibility with the 2-stage pipeline
-        #loss_smooth = torch.tensor(0.0, device=loss_flux.device)
-        dR = R[:, 1:] - R[:, :-1]
-        ddR = dR[:, 1:] - dR[:, :-1]
-        loss_smooth = torch.mean(ddR ** 2)
-
-        # 6. Selective Regularization: Exclude c_0 to allow full continuum level adjustment
-        if pca_coeffs.shape[1] > 1:
-            loss_reg = torch.mean(pca_coeffs[:, 1:] ** 2)
-        else:
-            loss_reg = torch.tensor(0.0, device=pca_coeffs.device)
-
-        total_loss = loss_flux + (self.lambda_smooth * loss_smooth) + (self.lambda_reg * loss_reg)
+        # 3. Curvature smoothing (Strict L1 norm on second derivative)
+        d2_R = R_pred[:, 2:] - 2 * R_pred[:, 1:-1] + R_pred[:, :-2]
+        loss_smooth = torch.mean(torch.abs(d2_R))
+        
+        # Total: Apply strong weight multiplier (2.0) to scale anchor to ensure flux conservation
+        total_loss = loss_flux + (2.0 * loss_anchor) + (self.lambda_smooth * loss_smooth)
         
         return total_loss, loss_flux, loss_smooth
+
+
+class SobolevPINNLoss(nn.Module):
+    """
+    Sobolev-Space Physics-Informed Loss Function.
+
+    Combines weighted Huber flux reconstruction loss, first-derivative (dY/dlambda) 
+    spectral line alignment in Sobolev space, and second-derivative response curvature 
+    regularization. Includes edge masking to de-weight boundary noise.
+
+    Parameters
+    ----------
+    num_bins : int, default=343
+        Number of spectral wavelength channels.
+    lambda_smooth : float, default=0.05
+        Weight coefficient for instrumental response curvature regularization.
+    lambda_deriv : float, default=0.1
+        Weight coefficient for the Sobolev first-derivative alignment term.
+    huber_delta : float, default=0.02
+        Threshold delta parameter for the Huber loss function.
+    device : Union[str, torch.device], default='cpu'
+        Target computational device for tensor allocation.
+    """
+    def __init__(
+        self, 
+        num_bins: int = 343, 
+        lambda_smooth: float = 0.05, 
+        lambda_deriv: float = 0.1, 
+        huber_delta: float = 0.02, 
+        device: Union[str, torch.device] = 'cpu'
+    ) -> None:
+        super().__init__()
+        self.lambda_smooth = lambda_smooth
+        self.lambda_deriv = lambda_deriv
+        self.huber_delta = huber_delta
+        
+        wavelengths = torch.linspace(336.0, 1020.0, num_bins).to(device)
+        self.edge_mask = torch.ones(1, num_bins).to(device)
+        self.edge_mask[:, wavelengths < 380.0] = 0.3
+        self.edge_mask[:, wavelengths > 950.0] = 0.3
+
+    def forward(
+        self, 
+        model: nn.Module, 
+        X: torch.Tensor, 
+        Y_true: torch.Tensor, 
+        params: Optional[torch.Tensor] = None, 
+        x_err: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Compute Sobolev loss terms for spectral recalibration.
+
+        Parameters
+        ----------
+        model : nn.Module
+            PINN model predicting recalibration parameters.
+        X : torch.Tensor
+            Uncalibrated input flux tensor of shape `(batch_size, input_dim)`.
+        Y_true : torch.Tensor
+            Target reference flux tensor of shape `(batch_size, input_dim)`.
+        params : torch.Tensor, optional
+            Auxiliary stellar parameters tensor.
+        x_err : torch.Tensor, optional
+            Measurement flux uncertainties for weighted reconstruction.
+
+        Returns
+        -------
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+            - total_loss : Aggregated Sobolev loss tensor.
+            - recon_loss : Weighted Huber flux reconstruction error.
+            - smooth_loss : Response curve curvature penalty.
+        """
+        scale = torch.max(X, dim=1, keepdim=True)[0] + 1e-12
+        X_scaled = X / scale
+        Y_true_scaled = Y_true / scale
+        
+        coeffs = model(X, params)
+        R_pred = model.reconstruct(coeffs)
+        Y_pred_scaled = X_scaled * R_pred
+
+        # 1. Flux loss (Huber + optional error weighting)
+        huber = F.huber_loss(Y_pred_scaled, Y_true_scaled, reduction='none', delta=self.huber_delta)
+        if x_err is not None:
+            rel_err = x_err / scale
+            weights = 1.0 / (rel_err ** 2 + 1e-4)
+            weights = weights / torch.mean(weights, dim=1, keepdim=True)
+            recon_loss = torch.mean(huber * weights * self.edge_mask)
+        else:
+            recon_loss = torch.mean(huber * self.edge_mask)
+
+        # 2. Sobolev Term: First-derivative flux alignment (dY/dlambda)
+        dY_pred = Y_pred_scaled[:, 1:] - Y_pred_scaled[:, :-1]
+        dY_true = Y_true_scaled[:, 1:] - Y_true_scaled[:, :-1]
+        loss_deriv = F.l1_loss(dY_pred, dY_true)
+
+        # 3. Instrumental response curve R(lambda) smoothing
+        d2R = R_pred[:, 2:] - 2 * R_pred[:, 1:-1] + R_pred[:, :-2]
+        smooth_loss = torch.mean(d2R ** 2)
+
+        total_loss = recon_loss + (self.lambda_deriv * loss_deriv) + (self.lambda_smooth * smooth_loss)
+        return total_loss, recon_loss, smooth_loss
+
+
+class AdaptivePhysicsLoss(nn.Module):
+    """
+    Adaptive Physics-Informed Loss Function with Spectral Domain Weighting.
+
+    Applies wavelength-dependent weighting factors to emphasize extreme UV (< 450 nm) 
+    and IR (> 900 nm) spectral domains while penalizing curvature in R(lambda).
+
+    Parameters
+    ----------
+    wavelengths : Union[np.ndarray, torch.Tensor], optional
+        Wavelength array of shape `(input_dim,)`. If provided, UV/IR region weighting is applied.
+    lambda_smooth : float, default=1e-1
+        Weighting factor for the second-derivative curvature penalty.
+    """
+    def __init__(
+        self, 
+        wavelengths: Optional[Union[np.ndarray, torch.Tensor]] = None, 
+        lambda_smooth: float = 1e-1
+    ) -> None:
+        super().__init__()
+        self.lambda_smooth = lambda_smooth
+        
+        # Wavelength-dependent weighting (increases relevance in UV and IR regimes)
+        if wavelengths is not None:
+            if not isinstance(wavelengths, torch.Tensor):
+                wl = torch.tensor(wavelengths, dtype=torch.float32)
+            else:
+                wl = wavelengths.float()
+            weights = torch.ones_like(wl)
+            weights[wl < 450.0] = 3.0   # Triple weight in UV/Blue band (< 450 nm)
+            weights[wl > 900.0] = 2.0   # Double weight in IR band (> 900 nm)
+            self.register_buffer("wl_weights", weights.unsqueeze(0))
+        else:
+            self.wl_weights = 1.0
+
+    def forward(
+        self, 
+        model: nn.Module, 
+        X: torch.Tensor, 
+        Y: torch.Tensor, 
+        params: Optional[torch.Tensor] = None, 
+        x_err: Optional[torch.Tensor] = None,
+        X_smooth: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Compute adaptive physics loss with domain weighting.
+
+        Parameters
+        ----------
+        model : nn.Module
+            PINN model instance.
+        X : torch.Tensor
+            Uncalibrated spectra tensor of shape `(batch_size, input_dim)`.
+        Y : torch.Tensor
+            Ground-truth target spectra of shape `(batch_size, input_dim)`.
+        params : torch.Tensor, optional
+            Stellar parameter inputs.
+        x_err : torch.Tensor, optional
+            Flux uncertainty estimates.
+        X_smooth : torch.Tensor, optional
+            Pre-smoothed baseline input to avoid propagating Gaia wiggles.
+
+        Returns
+        -------
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+            - total_loss : Combined adaptive loss value.
+            - loss_flux : Weighted relative flux loss.
+            - loss_smooth : Curvature regularization penalty.
+        """
+        # 1. Forward pass: predict PCA expansion coefficients
+        coeffs = model(X, params)
+        
+        # 2. Reconstruct multiplicative factor R(lambda)
+        R = model.reconstruct(coeffs)
+        
+        # 3. Apply to X_smooth (if provided) to prevent propagating Gaia spectral wiggles
+        X_base = X_smooth if X_smooth is not None else X
+        Y_pred = X_base * R
+        
+        # 4. Weighted relative flux loss
+        if x_err is not None:
+            weights = self.wl_weights / (x_err + 1e-8)
+        else:
+            weights = self.wl_weights / (Y + 1e-8)
+            
+        loss_flux = torch.mean(weights * torch.abs(Y_pred - Y))
+        
+        # 5. Second-derivative curvature regularization to enforce smooth R(lambda)
+        d2R = R[:, 2:] - 2 * R[:, 1:-1] + R[:, :-2]
+        loss_smooth = torch.mean(d2R ** 2)
+        
+        total_loss = loss_flux + self.lambda_smooth * loss_smooth
+        return total_loss, loss_flux, loss_smooth
+
+
+class UltimateSpectralPINNLoss(nn.Module):
+    r"""
+    Comprehensive Multi-Objective Physics-Informed Loss Function.
+
+    Combines Huber flux reconstruction, Sobolev spectral derivative alignment, 
+    bolometric integrated flux anchoring, and second-derivative response curve 
+    curvature regularization into a unified training objective.
+
+    Physical Guarantees:
+    - The Sobolev term ensures local spectral lines are crisply reconstructed.
+    - The Bolometric Anchor ensures globally that the star does not become 
+      artificially brighter or fainter upon calibration.
+    - The Curvature Penalty ($L_2$ norm on 2nd derivative of $R$) enforces 
+      instrumental physics: throughput corrections vary smoothly across wavelengths.
+
+    Parameters
+    ----------
+    num_bins : int, default=343
+        Number of spectral wavelength channels.
+    lambda_smooth : float, default=0.05
+        Weight factor for the second-derivative curvature penalty.
+    lambda_deriv : float, default=0.1
+        Weight factor for Sobolev first-derivative line alignment.
+    lambda_anchor : float, default=0.5
+        Weight factor for integrated bolometric flux anchoring.
+    huber_delta : float, default=0.02
+        Threshold delta parameter for Huber loss calculation.
+    device : Union[str, torch.device], default='cpu'
+        Target computational device.
+    """
+    def __init__(
+        self, 
+        num_bins: int = 343, 
+        lambda_smooth: float = 0.05, 
+        lambda_deriv: float = 0.1, 
+        lambda_anchor: float = 0.5, 
+        huber_delta: float = 0.02, 
+        device: Union[str, torch.device] = 'cpu'
+    ) -> None:
+        super().__init__()
+        self.lambda_smooth = lambda_smooth
+        self.lambda_deriv = lambda_deriv
+        self.lambda_anchor = lambda_anchor
+        self.huber_delta = huber_delta
+        self.num_bins = num_bins
+        
+        wavelengths = torch.linspace(336.0, 1020.0, num_bins).to(device)
+        self.edge_mask = torch.ones(1, num_bins).to(device)
+        self.edge_mask[:, wavelengths < 380.0] = 0.3
+        self.edge_mask[:, wavelengths > 950.0] = 0.3
+
+    def forward(
+        self, 
+        model: nn.Module, 
+        X: torch.Tensor, 
+        Y_true: torch.Tensor, 
+        params: Optional[torch.Tensor] = None, 
+        x_err: Optional[torch.Tensor] = None, 
+        *args, 
+        **kwargs
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Compute multi-objective physics-informed loss.
+
+        Parameters
+        ----------
+        model : nn.Module
+            PINN model predicting spectral calibration factors.
+        X : torch.Tensor
+            Uncalibrated spectra tensor of shape `(batch_size, input_dim)`.
+        Y_true : torch.Tensor
+            Reference CALSPEC spectra tensor of shape `(batch_size, input_dim)`.
+        params : torch.Tensor, optional
+            Auxiliary stellar parameters tensor.
+        x_err : torch.Tensor, optional
+            Flux measurement error uncertainties.
+
+        Returns
+        -------
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+            - total_loss : Aggregated loss value.
+            - recon_loss : Weighted Huber flux reconstruction error.
+            - loss_deriv : Sobolev first-derivative alignment loss.
+            - loss_anchor : Bolometric integrated flux anchor loss.
+            - smooth_loss : Response curve curvature penalty.
+        """
+        scale = torch.max(X, dim=1, keepdim=True)[0] + 1e-22
+        X_scaled = X / scale
+        Y_true_scaled = Y_true / scale
+        
+        coeffs = model(X_scaled, params)
+        
+        # KEY CORRECTION: Compute R_pred directly from PCA basis to prevent zero-division instabilities.
+        log_delta = model.pca_mean_log + torch.matmul(coeffs, model.pca_basis)
+        log_delta = torch.clamp(log_delta, min=-2.0, max=2.0)  # Clamped to match inference bounds
+        R_pred = torch.exp(log_delta)
+        
+        Y_pred = X * R_pred
+        Y_pred_scaled = Y_pred / scale
+
+        huber = F.huber_loss(Y_pred_scaled, Y_true_scaled, reduction='none', delta=self.huber_delta)
+        if x_err is not None:
+            rel_err = x_err / scale
+            weights = 1.0 / (rel_err ** 2 + 1e-4)
+            weights = weights / torch.mean(weights, dim=1, keepdim=True)
+            recon_loss = torch.mean(huber * weights * self.edge_mask)
+        else:
+            recon_loss = torch.mean(huber * self.edge_mask)
+
+        dY_pred = Y_pred_scaled[:, 1:] - Y_pred_scaled[:, :-1]
+        dY_true = Y_true_scaled[:, 1:] - Y_true_scaled[:, :-1]
+        loss_deriv = torch.mean(torch.abs(dY_pred - dY_true) * self.edge_mask[:, :-1])
+
+        area_pred = torch.sum(Y_pred_scaled, dim=1)
+        area_true = torch.sum(Y_true_scaled, dim=1)
+        loss_anchor = F.huber_loss(area_pred, area_true, reduction='mean', delta=self.huber_delta * self.num_bins)
+
+        # Use R_pred directly for second-derivative evaluation to prevent NaN propagation
+        d2R = R_pred[:, 2:] - 2 * R_pred[:, 1:-1] + R_pred[:, :-2]
+        smooth_loss = torch.mean(d2R ** 2)
+
+        total_loss = recon_loss + (self.lambda_deriv * loss_deriv) + (self.lambda_anchor * loss_anchor) + (self.lambda_smooth * smooth_loss)
+        
+        return total_loss, recon_loss, loss_deriv, loss_anchor, smooth_loss
 
 
 # =====================================================================
@@ -444,7 +741,7 @@ class UndegradedChebyshevPhysicsInformedLoss(nn.Module):
         params: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Computes multi-component loss for dual-branch (Chebyshev + local residual) PINNs.
+        Compute multi-component loss for dual-branch (Chebyshev + local residual) PINNs.
 
         Parameters
         ----------
@@ -525,7 +822,7 @@ class UndegradedPCAPhysicsInformedLoss(nn.Module):
         params: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Computes total loss for undegraded PCA recalibration models.
+        Compute total loss for undegraded PCA recalibration models.
 
         Parameters
         ----------

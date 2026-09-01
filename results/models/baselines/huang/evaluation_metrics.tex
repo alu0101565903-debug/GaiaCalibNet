@@ -1,29 +1,29 @@
 
 \begin{table}[htpb]
 \centering
-\caption{Quantitative Evaluation Results of the PINN Model (Blind Test: 17 stars)}
-\label{tab:pinn_evaluation}
+\caption{Quantitative Evaluation Results of the Huang et al. Baseline Model (Blind Test: 16 stars)}
+\label{tab:huang et al. baseline_evaluation}
 \begin{tabular}{lcll}
 \hline
 \textbf{Metric} & \textbf{Value} & \textbf{Objective} & \textbf{Utility} \\
 \hline
-Peak-Normalized MAE & 19.539\% & 0.0\% & Global precision independent of magnitude \\
-Normalized Std. Dev. (NSTD) & 10.320\% & 0.0\% & Statistical dispersion of flux residuals \\
-Reduced $\chi^2_\nu$ & 9689.036 & $\approx 1.0$ & Statistical validity relative to noise $\sigma_i$ \\
-Normalized Bias (MBE) & -19.539\% & 0.0\% & Integrated photometric flux conservation \\
-Cosine Similarity & 0.96382 & 1.00000 & Macroscopic continuum morphological fidelity \\
+Peak-Normalized MAE & 0.802\% & 0.0\% & Global precision independent of magnitude \\
+Normalized Std. Dev. (NSTD) & 1.813\% & 0.0\% & Statistical dispersion of flux residuals \\
+Reduced $\chi^2_\nu$ & 1.093 & $\approx 1.0$ & Statistical validity relative to noise $\sigma_i$ \\
+Normalized Bias (MBE) & 0.086\% & 0.0\% & Integrated photometric flux conservation \\
+Cosine Similarity & 0.99887 & 1.00000 & Macroscopic continuum morphological fidelity \\
 \hline
 \multicolumn{4}{c}{\textbf{Relative Error by Band}} \\
 \hline
-Blue Band (< 500 nm) & 30.933\% & Minimum & Regional response in Gaia BP photometer \\
-Green Band (500 - 700 nm) & 23.263\% & Minimum & Regional response in central optical band \\
-Red Band (> 700 nm) & 11.349\% & Minimum & Regional response in Gaia RP photometer \\
+Blue Band (< 500 nm) & 2.516\% & Minimum & Regional response in Gaia BP photometer \\
+Green Band (500 - 700 nm) & 0.271\% & Minimum & Regional response in central optical band \\
+Red Band (> 700 nm) & 0.259\% & Minimum & Regional response in Gaia RP photometer \\
 \hline
 \multicolumn{4}{c}{\textbf{Photometric Bias by Band ($\text{Bias}_{\text{norm}}$)}} \\
 \hline
-Blue Band Bias & -198.075\% & 0.0\% & Energy conservation in Gaia BP photometer \\
-Green Band Bias & -174.481\% & 0.0\% & Energy conservation in central optical band \\
-Red Band Bias & -126.351\% & 0.0\% & Energy conservation in Gaia RP photometer \\
+Blue Band Bias & +1.281\% & 0.0\% & Energy conservation in Gaia BP photometer \\
+Green Band Bias & +0.709\% & 0.0\% & Energy conservation in central optical band \\
+Red Band Bias & +1.403\% & 0.0\% & Energy conservation in Gaia RP photometer \\
 \hline
 \end{tabular}
 \end{table}

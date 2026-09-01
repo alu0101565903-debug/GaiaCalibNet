@@ -1,6 +1,6 @@
 """
 Module: pinn_architectures.py
-Report Section: 
+Report Section: 5.0 Empirical Baselines & Comparative Evaluation
 
 Physics-Informed Neural Network (PINN) Architectures for Spectral Recalibration.
 
@@ -8,31 +8,42 @@ This module defines neural network architectures tailored for predicting continu
 smooth multiplicative correction profiles R(lambda) to recalibrate Gaia BP/RP optical 
 spectra against high-precision CALSPEC reference standards.
 
-Supported Architectures:
-1. BiCubicSpectralPINN:
-   Predicts correction values at sparse control knots and upsamples to full 
-   spectral resolution via 2D bicubic interpolation to enforce smoothness.
-2. GaussianSpectralPINN:
-   Embeds an internal 1D Gaussian kernel smoothing layer in the forward path to 
-   filter high-frequency noise prior to evaluating dense layer transformations.
-3. PCASpectralPINN:
-   Predicts expansion coefficients c_i for a pre-computed Principal Component Analysis 
-   (PCA) basis set constructed from residual spectral features.
-4. PCAParamsSpectralPINN:
-   Extends PCASpectralPINN by incorporating stellar physical properties (e.g., G mag, 
-   BP-RP color, RUWE) alongside spectral flux input.
-5. UndegradedPCASpectralPINN:
-   Uses a dual-branch architecture with a CNN feature extractor to simultaneously 
-   predict global continuum corrections (via a Chebyshev polynomial basis) and 
-   highly localized peak corrections (via a direct residual output).
+Supported Architectures
+-----------------------
+1. BiCubicSpectralPINN
+    Predicts correction values at sparse control knots and upsamples to full 
+    spectral resolution via 2D bicubic interpolation to enforce smoothness.
+2. GaussianSpectralPINN
+    Embeds an internal 1D Gaussian kernel smoothing layer in the forward path to 
+    filter high-frequency noise prior to evaluating dense layer transformations.
+3. PCASpectralPINN
+    Predicts expansion coefficients c_i for a pre-computed Principal Component Analysis 
+    (PCA) basis set constructed from residual spectral features.
+4. PCAParamsSpectralPINN
+    Extends PCASpectralPINN by incorporating stellar physical properties (e.g., G mag, 
+    BP-RP color, RUWE) alongside spectral flux input.
+5. ResNetPCASpectralPINN
+    Uses 1D residual convolutional layers to extract local features alongside 
+    stellar parameters to predict PCA basis expansion coefficients in log-space.
+6. CoarseBandLinearPINN
+    Differentiable linear regression architecture that collapses high-resolution 
+    pixels into coarse spectral bands (pseudo-colors) for low-data regimes.
+7. UndegradedChebyshevSpectralPINN
+    Uses a dual-branch architecture with a CNN feature extractor to simultaneously 
+    predict global continuum corrections (via a Chebyshev polynomial basis) and 
+    highly localized peak corrections (via a direct residual output).
+8. UndegradedPCASpectralPINN
+    Predicts high-resolution PCA coefficients using a 1D CNN feature extractor 
+    conditioned on low-resolution spectra and stellar parameters.
 """
 
-from typing import Dict, Optional, Type, Tuple, Union
+from typing import Dict, Optional, Tuple, Type, Union
+
 import numpy as np
+import scipy.special as special
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import scipy.special as special
 
 
 # =====================================================================
@@ -46,11 +57,12 @@ class BaseSpectralPINN(nn.Module):
     Establishes common structural contracts and utility methods across 
     derived spectral PINN architectures.
     """
+
     def prepare_for_lbfgs(self) -> None:
         """
         Prepare model state for L-BFGS second-order optimization.
         
-        Sets model to evaluation mode ("self.eval()") to disable stochastic 
+        Sets model to evaluation mode (`self.eval()`) to disable stochastic 
         dropout and freeze batch-normalization statistics during line-search steps.
         """
         self.eval()
@@ -61,7 +73,7 @@ class BaseSpectralPINN(nn.Module):
 # =====================================================================
 
 class BiCubicSpectralPINN(BaseSpectralPINN):
-    """
+    r"""
     Physics-Informed Neural Network based on Control Knots and Cubic Interpolation.
 
     Predicts a smooth $C^1$-continuous recalibration profile $R(\lambda)$. Instead of 
@@ -96,7 +108,7 @@ class BiCubicSpectralPINN(BaseSpectralPINN):
         nn.init.zeros_(self.net[-1].bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
+        r"""
         Execute forward pass predicting the multiplicative factor $R(\lambda)$.
 
         Parameters
@@ -141,7 +153,7 @@ class BiCubicSpectralPINN(BaseSpectralPINN):
 # =====================================================================
 
 class GaussianSpectralPINN(BaseSpectralPINN):
-    """
+    r"""
     Residual PINN Architecture featuring Embedded 1D Gaussian Filtering.
 
     Applies an internal fixed 1D Gaussian smoothing convolution operation to inputs 
@@ -185,7 +197,7 @@ class GaussianSpectralPINN(BaseSpectralPINN):
         self.kernel_padding = kernel_size // 2
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
+        r"""
         Execute forward pass applying Gaussian smoothing filter beforehand.
 
         Parameters
@@ -221,7 +233,7 @@ class GaussianSpectralPINN(BaseSpectralPINN):
 # =====================================================================
 
 class PCASpectralPINN(BaseSpectralPINN):
-    """
+    r"""
     PCA Component Expansion Physics-Informed Neural Network.
 
     Predicts a vector of expansion coefficients $c_i$ for a pre-computed Principal 
@@ -273,7 +285,7 @@ class PCASpectralPINN(BaseSpectralPINN):
         nn.init.zeros_(self.net[-1].bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
+        r"""
         Forward pass predicting PCA expansion coefficients $c_i$.
 
         Parameters
@@ -286,13 +298,12 @@ class PCASpectralPINN(BaseSpectralPINN):
         torch.Tensor
             Predicted PCA coefficients $c_i$ of shape `(batch_size, num_components)`.
         """
-
         max_val = torch.max(x, dim=1, keepdim=True)[0] + 1e-15
         x_norm = x / max_val
         return self.net(x_norm)
 
     def reconstruct(self, pca_coeffs: torch.Tensor) -> torch.Tensor:
-        """
+        r"""
         Reconstruct full $R(\lambda)$ correction profiles from predicted PCA coefficients.
 
         Parameters
@@ -316,7 +327,7 @@ class PCASpectralPINN(BaseSpectralPINN):
 # =====================================================================
 
 class PCAParamsSpectralPINN(BaseSpectralPINN):
-    """
+    r"""
     PCA PINN Architecture Augmented with Physical Stellar Parameters.
 
     Extends `PCASpectralPINN` by concatenating physical stellar parameters 
@@ -368,11 +379,11 @@ class PCAParamsSpectralPINN(BaseSpectralPINN):
             nn.Linear(64, self.num_components)
         )
 
-        nn.init.zeros_(self.net[-1].weight)
+        nn.init.normal_(self.net[-1].weight, std=1e-3)
         nn.init.zeros_(self.net[-1].bias)
 
     def forward(self, x: torch.Tensor, params: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """
+        r"""
         Forward pass utilizing combined spectral flux and stellar parameter inputs.
 
         Parameters
@@ -399,30 +410,334 @@ class PCAParamsSpectralPINN(BaseSpectralPINN):
         return self.net(x_combined)
 
     def reconstruct(self, pca_coeffs: torch.Tensor) -> torch.Tensor:
-        """
-        Reconstruct $R(\lambda)$ profiles from predicted PCA coefficients.
+        r"""
+        Reconstruct $R(\lambda)$ profiles from predicted log-space PCA coefficients.
 
         Parameters
         ----------
         pca_coeffs : torch.Tensor
-            PCA expansion coefficients of shape `(batch_size, num_components)`.
+            Predicted expansion coefficients of shape `(batch_size, num_components)`.
 
         Returns
         -------
         torch.Tensor
-            Reconstructed multiplicative factors $R(\lambda)$ of shape `(batch_size, input_dim)`.
+            Reconstructed multiplicative factor $R(\lambda)$ clamped to [0.1, 10.0].
         """
-        delta_R = torch.matmul(pca_coeffs, self.pca_basis)
-        R = self.pca_mean + delta_R
-        return torch.clamp(R, min=0.3, max=3.0)
+        # Projection onto logarithmic basis
+        delta_log_R = torch.matmul(pca_coeffs, self.pca_basis)
+        log_R = self.pca_mean + delta_log_R
+        
+        # Exponentiate to return to linear space for multiplicative scaling
+        R = torch.exp(log_R)
+        
+        # Extended clamping range for logarithmic scale stability
+        return torch.clamp(R, min=0.1, max=10.0)
 
 
 # =====================================================================
-# 5. Chebyshev + UNDEGRATED CALSPEC SPECTRUM
+# 5. RESNET FEATURE EXTRACTOR PCA PINN
 # =====================================================================
+
+class ResBlock1D(nn.Module):
+    """
+    1D Residual Block with SiLU Activation.
+
+    Applies two sequential 1D convolutional operations with a skip connection 
+    to facilitate deeper feature extraction across spectral channels.
+
+    Parameters
+    ----------
+    channels : int
+        Number of input and output channels for convolutional layers.
+    """
+
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv1d(channels, channels, kernel_size=3, padding=1)
+        self.silu = nn.SiLU()
+        self.conv2 = nn.Conv1d(channels, channels, kernel_size=3, padding=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through the residual block.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input feature map of shape `(batch_size, channels, length)`.
+
+        Returns
+        -------
+        torch.Tensor
+            Output feature map with residual connection added, 
+            shape `(batch_size, channels, length)`.
+        """
+        return x + self.conv2(self.silu(self.conv1(x)))
+
+
+class ResNetPCASpectralPINN(BaseSpectralPINN):
+    r"""
+    ResNet-based Feature Extractor with Log-Space PCA Output Head.
+
+    Combines a 1D Convolutional Neural Network with residual blocks to extract 
+    spatial features from raw spectra alongside stellar parameters. The model 
+    predicts coefficients for expanding correction profiles in logarithmic PCA space.
+
+    Parameters
+    ----------
+    input_dim : int, default=343
+        Number of spectral wavelength bins.
+    pca_basis : Optional[Union[torch.Tensor, np.ndarray]], default=None
+        PCA component basis matrix of shape `(num_components, input_dim)`.
+    pca_mean_log : Optional[Union[torch.Tensor, np.ndarray]], default=None
+        Log-space PCA mean vector of shape `(input_dim,)`.
+    num_params : int, default=3
+        Number of physical stellar parameter features appended to inputs.
+    """
+
+    def __init__(
+        self, 
+        input_dim: int = 343, 
+        pca_basis: Optional[Union[torch.Tensor, np.ndarray]] = None, 
+        pca_mean_log: Optional[Union[torch.Tensor, np.ndarray]] = None, 
+        num_params: int = 3
+    ) -> None:
+        super().__init__()
+        self.input_dim = input_dim
+
+        if pca_basis is None:
+            raise ValueError("Argument 'pca_basis' must be provided.")
+        
+        if not isinstance(pca_basis, torch.Tensor):
+            pca_basis = torch.tensor(pca_basis, dtype=torch.float32)
+        self.register_buffer("pca_basis", pca_basis.float())
+        num_components = self.pca_basis.shape[0]
+        
+        if pca_mean_log is None:
+            pca_mean_log = torch.zeros(input_dim, dtype=torch.float32)
+        elif not isinstance(pca_mean_log, torch.Tensor):
+            pca_mean_log = torch.tensor(pca_mean_log, dtype=torch.float32)
+        self.register_buffer("pca_mean_log", pca_mean_log.float())
+
+        # Convolutional feature extractor
+        self.feature_extractor = nn.Sequential(
+            nn.Conv1d(1, 32, kernel_size=7, padding=3),
+            nn.SiLU(),
+            ResBlock1D(32),
+            nn.AdaptiveAvgPool1d(32)
+        )
+        
+        # Auxiliary parameter encoder
+        if num_params > 0:
+            self.param_encoder = nn.Sequential(
+                nn.Linear(num_params, 32),
+                nn.SiLU(),
+                nn.Linear(32, 64),
+                nn.SiLU()
+            )
+        else:
+            self.param_encoder = None
+        
+        head_input_dim = 32 * 32
+        if num_params > 0:
+            head_input_dim += 64
+
+        # Final MLP projection head
+        self.head = nn.Sequential(
+            nn.Linear(head_input_dim, 128),
+            nn.SiLU(),
+            nn.Linear(128, num_components)
+        )
+        nn.init.zeros_(self.head[-1].weight)
+        nn.init.zeros_(self.head[-1].bias)
+
+    def forward(
+        self, 
+        x_scaled: torch.Tensor, 
+        params: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        r"""
+        Forward pass predicting PCA expansion coefficients from spectra and parameters.
+
+        Parameters
+        ----------
+        x_scaled : torch.Tensor
+            Scaled spectral flux input tensor of shape `(batch_size, input_dim)`.
+        params : Optional[torch.Tensor], default=None
+            Auxiliary stellar parameter features of shape `(batch_size, num_params)`.
+
+        Returns
+        -------
+        torch.Tensor
+            Predicted PCA expansion coefficients of shape `(batch_size, num_components)`.
+
+        Raises
+        ------
+        ValueError
+            If `param_encoder` is present but `params` tensor is `None`.
+        """
+        x_in = x_scaled.unsqueeze(1)
+        spec_feats = self.feature_extractor(x_in).flatten(1)
+        
+        if self.param_encoder is not None and params is not None:
+            param_feats = self.param_encoder(params)
+            combined = torch.cat([spec_feats, param_feats], dim=1)
+        elif self.param_encoder is not None and params is None:
+            raise ValueError("Model expected 'params' input tensor, but received None.")
+        else:
+            combined = spec_feats
+            
+        return self.head(combined)
+
+    def reconstruct(self, coeffs: torch.Tensor, original_x: torch.Tensor) -> torch.Tensor:
+        r"""
+        Reconstruct recalibrated spectra from predicted PCA expansion coefficients.
+
+        Parameters
+        ----------
+        coeffs : torch.Tensor
+            Predicted expansion coefficients of shape `(batch_size, num_components)`.
+        original_x : torch.Tensor
+            Uncalibrated original input spectra of shape `(batch_size, input_dim)`.
+
+        Returns
+        -------
+        torch.Tensor
+            Recalibrated spectral flux tensor `original_x * R_pred` of shape `(batch_size, input_dim)`.
+        """
+        # 1. Recover pure logarithmic difference
+        log_delta = self.pca_mean_log + torch.matmul(coeffs, self.pca_basis)
+        
+        # Defensive clamping: limit log_delta to avoid numerical overflow in exp()
+        log_delta = torch.clamp(log_delta, min=-2.0, max=2.0)
+        
+        # 2. Multiplicative scaling factor without overflow risk
+        R_pred = torch.exp(log_delta)
+        
+        return original_x * R_pred
+
+
+# =====================================================================
+# 6. COARSE BAND LINEAR PINN ARCHITECTURE
+# =====================================================================
+
+class CoarseBandLinearPINN(BaseSpectralPINN):
+    r"""
+    Differentiable Linear Regression with Internal Pseudo-Color Feature Extraction.
+
+    Designed for highly constrained, low-data training regimes (< 100 spectra).
+    Aggregates high-resolution wavelength bins into broad pseudo-color bands using 
+    adaptive average pooling prior to linear projection onto PCA components.
+
+    Parameters
+    ----------
+    input_dim : int, default=343
+        Number of spectral wavelength bins.
+    pca_basis : Optional[Union[torch.Tensor, np.ndarray]], default=None
+        PCA basis matrix of shape `(num_components, input_dim)`.
+    pca_mean_log : Optional[Union[torch.Tensor, np.ndarray]], default=None
+        Log-space mean spectral correction profile of shape `(input_dim,)`.
+    num_params : int, default=1
+        Number of physical stellar parameter features (typically 1 for G Magnitude).
+    num_coarse_bins : int, default=5
+        Number of downsampled broad bands (pseudo-colors) extracted from flux.
+    """
+
+    def __init__(
+        self, 
+        input_dim: int = 343, 
+        pca_basis: Optional[Union[torch.Tensor, np.ndarray]] = None, 
+        pca_mean_log: Optional[Union[torch.Tensor, np.ndarray]] = None, 
+        num_params: int = 1,  # Typically 1 for G Magnitude
+        num_coarse_bins: int = 5
+    ) -> None:
+        super().__init__()
+        self.input_dim = input_dim
+        self.num_params = num_params
+        self.num_coarse_bins = num_coarse_bins
+
+        if pca_basis is None:
+            raise ValueError("Argument 'pca_basis' must be provided.")
+        
+        # Register PCA basis buffer (output space projection)
+        if not isinstance(pca_basis, torch.Tensor):
+            pca_basis = torch.tensor(pca_basis, dtype=torch.float32)
+        self.register_buffer("pca_basis", pca_basis.float())
+        num_components = self.pca_basis.shape[0]
+
+        if pca_mean_log is None:
+            pca_mean_log = torch.zeros(input_dim, dtype=torch.float32)
+        elif not isinstance(pca_mean_log, torch.Tensor):
+            pca_mean_log = torch.tensor(pca_mean_log, dtype=torch.float32)
+        self.register_buffer("pca_mean_log", pca_mean_log.float())
+
+        # Single linear projection layer: [coarse_bins + params] -> [PCA coefficients]
+        total_features = num_coarse_bins + num_params
+        self.linear = nn.Linear(total_features, num_components)
+        
+        # Neutral initialization so training starts at R(lambda) = 1.0
+        nn.init.zeros_(self.linear.weight)
+        nn.init.zeros_(self.linear.bias)
+
+    def forward(self, x: torch.Tensor, params: Optional[torch.Tensor] = None) -> torch.Tensor:
+        r"""
+        Forward pass predicting PCA coefficients from coarse pseudo-color bands.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Uncalibrated spectra tensor of shape `(batch_size, input_dim)`.
+        params : Optional[torch.Tensor], default=None
+            Auxiliary stellar parameter features of shape `(batch_size, num_params)`.
+
+        Returns
+        -------
+        torch.Tensor
+            Predicted PCA coefficients of shape `(batch_size, num_components)`.
+        """
+        # 1. Bottleneck: Collapse input pixels into broad bands
+        x_in = x.unsqueeze(1)  # Format: (batch, channels, length)
+        x_coarse = F.adaptive_avg_pool1d(x_in, self.num_coarse_bins).flatten(1)
+        
+        # 2. Normalize broad band flux to isolate continuum shape/color
+        scale = torch.max(x_coarse, dim=1, keepdim=True)[0] + 1e-12
+        x_coarse_norm = x_coarse / scale
+        
+        # 3. Concatenate auxiliary stellar parameters if expected and present
+        if self.num_params > 0 and params is not None:
+            combined = torch.cat([x_coarse_norm, params], dim=1)
+        else:
+            combined = x_coarse_norm
+            
+        # 4. Direct linear regression to PCA expansion coefficients
+        return self.linear(combined)
+
+    def reconstruct(self, coeffs: torch.Tensor) -> torch.Tensor:
+        r"""
+        Reconstruct multiplicative factor $R(\lambda)$ from predicted PCA coefficients.
+
+        Parameters
+        ----------
+        coeffs : torch.Tensor
+            Predicted expansion coefficients of shape `(batch_size, num_components)`.
+
+        Returns
+        -------
+        torch.Tensor
+            Reconstructed $R(\lambda)$ correction factors of shape `(batch_size, input_dim)`.
+        """
+        log_delta = self.pca_mean_log + torch.matmul(coeffs, self.pca_basis)
+        log_delta = torch.clamp(log_delta, min=-2.0, max=2.0)
+        return torch.exp(log_delta)
+
+
+# =====================================================================
+# 7. CHEBYSHEV + UNDEGRADED CALSPEC SPECTRUM
+# =====================================================================
+
 def build_chebyshev_basis(num_channels: int, degree: int = 10) -> np.ndarray:
     """
-    Constructs a set of Chebyshev polynomials to serve as a smooth global basis.
+    Construct a set of Chebyshev polynomials to serve as a smooth global basis.
     
     Parameters
     ----------
@@ -442,8 +757,9 @@ def build_chebyshev_basis(num_channels: int, degree: int = 10) -> np.ndarray:
         basis[k] = special.eval_chebyt(k, x)
     return basis
 
+
 class UndegradedChebyshevSpectralPINN(BaseSpectralPINN):
-    """
+    r"""
     Dual-branch Physics-Informed Neural Network with a global Chebyshev basis 
     and a local residual branch for high-frequency corrections.
 
@@ -508,7 +824,11 @@ class UndegradedChebyshevSpectralPINN(BaseSpectralPINN):
         nn.init.zeros_(self.fc_local[-1].weight)
         nn.init.zeros_(self.fc_local[-1].bias)
 
-    def forward(self, x: torch.Tensor, params: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, 
+        x: torch.Tensor, 
+        params: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass predicting global basis coefficients and local residual values.
         
@@ -545,8 +865,8 @@ class UndegradedChebyshevSpectralPINN(BaseSpectralPINN):
         return global_coeffs, local_residual
 
     def reconstruct(self, model_output: Tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
-        """
-        Merges the global baseline and local residual branches into the final prediction.
+        r"""
+        Merge the global baseline and local residual branches into the final prediction.
         
         Parameters
         ----------
@@ -563,13 +883,14 @@ class UndegradedChebyshevSpectralPINN(BaseSpectralPINN):
         
         # Total correction is: 1.0 (Identity) + Smooth_Curve (Global) + Sharp_Peaks (Local)
         return 1.0 + R_global + local_residual
-    
+
 
 # =====================================================================
-# 6. PCA + UNDEGRATED CALSPEC SPECTRUM
+# 8. PCA + UNDEGRATED CALSPEC SPECTRUM
 # =====================================================================
+
 class UndegradedPCASpectralPINN(BaseSpectralPINN):
-    """
+    r"""
     Physics-Informed Neural Network using a High-Resolution PCA basis.
 
     This architecture uses a CNN to extract features from uncalibrated 
@@ -581,10 +902,10 @@ class UndegradedPCASpectralPINN(BaseSpectralPINN):
     ----------
     input_dim : int
         Number of spectral wavelength bins.
-    pca_basis : np.ndarray
-        High-resolution PCA components matrix.
-    pca_mean : np.ndarray
-        High-resolution PCA mean vector.
+    pca_basis : Union[torch.Tensor, np.ndarray]
+        High-resolution PCA components matrix of shape `(num_components, input_dim)`.
+    pca_mean : Union[torch.Tensor, np.ndarray]
+        High-resolution PCA mean vector of shape `(input_dim,)`.
     num_params : int, default=0
         Number of optional stellar parameters (e.g., BP-RP, G, RUWE).
     """
@@ -592,18 +913,24 @@ class UndegradedPCASpectralPINN(BaseSpectralPINN):
     def __init__(
         self, 
         input_dim: int, 
-        pca_basis: np.ndarray, 
-        pca_mean: np.ndarray, 
+        pca_basis: Union[torch.Tensor, np.ndarray], 
+        pca_mean: Union[torch.Tensor, np.ndarray], 
         num_params: int = 0
     ) -> None:
         super().__init__()
         self.input_dim = input_dim
         self.num_params = num_params
+
+        if not isinstance(pca_basis, torch.Tensor):
+            pca_basis = torch.tensor(pca_basis, dtype=torch.float32)
+        if not isinstance(pca_mean, torch.Tensor):
+            pca_mean = torch.tensor(pca_mean, dtype=torch.float32)
+
         self.num_components = pca_basis.shape[0]
 
         # Register PCA basis and mean as non-trainable tensors (High Resolution)
-        self.register_buffer("pca_basis", torch.tensor(pca_basis, dtype=torch.float32))
-        self.register_buffer("pca_mean", torch.tensor(pca_mean, dtype=torch.float32))
+        self.register_buffer("pca_basis", pca_basis.float())
+        self.register_buffer("pca_mean", pca_mean.float())
         
         # Feature extractor (1D CNN)
         self.feature_extractor = nn.Sequential(
@@ -636,7 +963,19 @@ class UndegradedPCASpectralPINN(BaseSpectralPINN):
 
     def forward(self, x: torch.Tensor, params: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        Forward pass predicting the PCA expansion coefficients.
+        Forward pass predicting PCA expansion coefficients.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Uncalibrated spectra tensor of shape `(batch_size, input_dim)`.
+        params : Optional[torch.Tensor], default=None
+            Auxiliary parameters tensor of shape `(batch_size, num_params)`.
+
+        Returns
+        -------
+        torch.Tensor
+            Predicted PCA coefficients of shape `(batch_size, num_components)`.
         """
         max_val = torch.max(x, dim=1, keepdim=True)[0] + 1e-30
         x_norm = (x / max_val).unsqueeze(1)  
@@ -652,9 +991,21 @@ class UndegradedPCASpectralPINN(BaseSpectralPINN):
         return coeffs
 
     def reconstruct(self, coeffs: torch.Tensor) -> torch.Tensor:
-        """
-        Constructs the high-resolution multiplicative factor using the PCA basis.
-        Calculates: $R(\lambda) = \mu(\lambda) + \sum c_i P_i(\lambda)$
+        r"""
+        Construct high-resolution multiplicative factor $R(\lambda)$ using PCA basis.
+
+        Calculates:
+        $$R(\lambda) = \mu(\lambda) + \sum c_i P_i(\lambda)$$
+
+        Parameters
+        ----------
+        coeffs : torch.Tensor
+            Predicted PCA expansion coefficients of shape `(batch_size, num_components)`.
+
+        Returns
+        -------
+        torch.Tensor
+            Reconstructed $R(\lambda)$ factor of shape `(batch_size, input_dim)`.
         """
         # (batch_size, num_components) x (num_components, input_dim) -> (batch_size, input_dim)
         R_pred = self.pca_mean + torch.matmul(coeffs, self.pca_basis)
@@ -670,6 +1021,8 @@ MODEL_REGISTRY: Dict[str, Type[nn.Module]] = {
     "residual_gaussian": GaussianSpectralPINN,
     "pca_nn": PCASpectralPINN,
     "pca_params_nn": PCAParamsSpectralPINN,
+    "resnet_pca_nn": ResNetPCASpectralPINN,
+    "coarse_band_linear_nn": CoarseBandLinearPINN,
     "pca_undegraded_nn": UndegradedPCASpectralPINN,
     "cheb_undegraded_nn": UndegradedChebyshevSpectralPINN
 }

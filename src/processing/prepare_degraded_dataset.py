@@ -1,143 +1,242 @@
 """
 Module: prepare_degraded_dataset.py
-Report Section: Chapter 5 Data Processing & Feature Engineering
+Report Section: 4.4 Data Degradation & Dataset Preparation
 
-This script constructs the full regression dataset (X and Y matrices) for training 
-and evaluating the PINN model. It maps CALSPEC target FITS spectra to Gaia DR3 
-source IDs, converts wavelengths from Ångströms to nanometers, applies LSF 
-resolution degradation using the custom convolution module 'c', interpolates the 
-data onto a unified 300-channel wavelength grid (330 nm - 1050 nm), and saves the 
-resulting matrices as single-precision float32 NumPy arrays.
+This module constructs degraded spectral datasets for neural network training 
+and evaluation. It degrades high-resolution CALSPEC standard star spectra to match 
+Gaia BP/RP low-resolution spectra by convolving them with an empirical 
+wavelength-dependent Gaia Line Spread Function (LSF) model (Montegriffo et al. 2023).
+
+Features:
+    - Empirical Gaia BP/RP LSF convolution using Montegriffo et al. (2023) resolution curves.
+    - Standardized CALSPEC unit conversions (Å -> nm, erg/s/cm²/Å -> W/m²/nm).
+    - Wavelength grid alignment using cubic spline interpolation.
+    - Robust batch queries via GaiaXPy with automated retry logic.
+    - Generation of normalized feature tensors (X_norm, Y_ratio, Errors_norm) for network training.
 """
 
 import os
+import time
 import warnings
+from typing import Any, List, Optional, Tuple, Union
+
+import gaiaxpy
 import numpy as np
 import pandas as pd
-import gaiaxpy
 from astropy.io import fits
+from scipy.integrate import simpson
 from scipy.interpolate import interp1d
 
-# Silence non-critical astronomical and runtime warnings
+# Suppress runtime warnings for cleaner terminal output
 warnings.filterwarnings("ignore")
 
-# LSF Convolution Module ("c") Import Strategy
 try:
-    from c import c as lsf_convolve
+    from c import c as c_module_correct_lsf
+
     print("[✓] Custom LSF convolution module 'c' successfully imported.")
 except ImportError:
     print("[!] Warning: Custom module 'c' not found in system path.")
-    print("    Falling back to internal Gaussian LSF convolution kernel.")
-    from scipy.ndimage import gaussian_filter1d
-    
-    def lsf_convolve(x, y, x_eval):
-        """Fallback Gaussian filter simulating Gaia DR3 LSF (~8 nm resolution)."""
-        return gaussian_filter1d(y, sigma=3.0)
+    print("    Falling back to empirical Gaia BP/RP LSF convolution (Montegriffo et al. 2023).")
+
+    def c_module_correct_lsf(x: np.ndarray, y: np.ndarray, x_eval: np.ndarray) -> np.ndarray:
+        """
+        Simulate the Gaia BP/RP Line Spread Function (LSF) using the empirical 
+        Resolution R(lambda) curve from Montegriffo et al. 2023 (Table 1).
+
+        Parameters
+        ----------
+        x : numpy.ndarray
+            Original high-resolution wavelength array in nanometers.
+        y : numpy.ndarray
+            Original high-resolution flux array in W / (m^2 nm).
+        x_eval : numpy.ndarray
+            Evaluation wavelength grid array in nanometers.
+
+        Returns
+        -------
+        numpy.ndarray
+            Degraded flux array evaluated on the `x_eval` grid.
+        """
+        # 1. Anchor points for Gaia BP/RP spectral resolution R(lambda) (Montegriffo et al. 2023)
+        montegriffo_waves = np.array(
+            [
+                330, 350, 400, 450, 500, 550, 600, 630,        # Blue Photometer (BP)
+                640, 700, 750, 800, 850, 900, 950, 1000, 1050  # Red Photometer (RP)
+            ],
+            dtype=np.float64,
+        )
+
+        montegriffo_R = np.array(
+            [
+                100, 115, 100, 80, 60, 45, 35, 30,  # BP resolution curve
+                90, 80, 70, 60, 50, 45, 40, 35, 30   # RP resolution curve
+            ],
+            dtype=np.float64,
+        )
+
+        get_R = interp1d(montegriffo_waves, montegriffo_R, kind="linear", fill_value="extrapolate")
+        y_degraded = np.zeros_like(x_eval, dtype=np.float64)
+
+        # 2. Point-by-point convolution with wavelength-dependent Gaussian kernel
+        R_calspec = 800.0  # Intrinsic resolution of CALSPEC spectra
+
+        for i, w_eval in enumerate(x_eval):
+            R_w = get_R(w_eval)
+
+            # Quadrature subtraction to isolate instrumental blurring kernel
+            sigma_gaia = w_eval / (2.355 * R_w)
+            sigma_initial = w_eval / (2.355 * R_calspec)
+
+            # Protect against cases where empirical resolution exceeds CALSPEC intrinsic resolution
+            sigma_kernel_sq = sigma_gaia**2 - sigma_initial**2
+            sigma_w = np.sqrt(sigma_kernel_sq) if sigma_kernel_sq > 0 else 1e-5
+
+            kernel = np.exp(-0.5 * ((x - w_eval) / sigma_w) ** 2)
+
+            # Kernel normalization
+            kernel_area = simpson(y=kernel, x=x)
+            if kernel_area > 0:
+                kernel = kernel / kernel_area
+
+            y_degraded[i] = simpson(y=y * kernel, x=x)
+
+        return y_degraded
 
 
 def process_calspec_target(fits_path: str, wave_grid_nm: np.ndarray) -> np.ndarray:
     """
-    Loads a CALSPEC FITS file, converts wavelength units from Ångströms to nanometers,
-    filters the active spectral range, degrades the resolution via LSF convolution,
-    and resamples the flux onto the target homogeneous wavelength grid.
+    Process a single CALSPEC FITS file by converting units, applying empirical LSF 
+    convolution, and interpolating onto the target Gaia wavelength grid via cubic spline.
 
-    Parameters:
-    - fits_path (str): Full path to the CALSPEC FITS file.
-    - wave_grid_nm (np.ndarray): Common target wavelength grid in nanometers.
+    Parameters
+    ----------
+    fits_path : str
+        Path to the CALSPEC FITS file.
+    wave_grid_nm : numpy.ndarray
+        Target wavelength evaluation grid in nanometers.
 
-    Returns:
-    - np.ndarray: Degraded, interpolated flux vector (float32).
+    Returns
+    -------
+    numpy.ndarray
+        Processed, convolved, and grid-aligned CALSPEC flux array in W / (m^2 nm).
+
+    Raises
+    ------
+    ValueError
+        If key spectral data tables are missing, data coverage is insufficient, 
+        or output contains unexpected NaN values.
     """
+    # 1. FITS Data Extraction
     with fits.open(fits_path) as hdul:
-        # Standard CALSPEC binary table data is stored in Extension 1
-        data = hdul[1].data
+        data = None
+        for ext in hdul:
+            if hasattr(ext, "columns") and "WAVELENGTH" in ext.columns.names:
+                data = ext.data
+                break
+
+        if data is None:
+            raise ValueError(f"Could not find WAVELENGTH/FLUX columns in {fits_path}")
+
         raw_wave = np.array(data["WAVELENGTH"], dtype=np.float64)
         raw_flux = np.array(data["FLUX"], dtype=np.float64)
 
-    # 1. Convert Ångströms to Nanometers (3000 Å -> 300 nm, 10000 Å -> 1000 nm)
+    # 2. CALSPEC Unit Conversion (Å -> nm & erg/s/cm^2/Å -> W/m^2/nm)
     wave_nm = raw_wave / 10.0
+    flux_wm2nm = raw_flux * 1e-2
 
-    # 2. Filter target spectral region (300 nm to 1050 nm)
-    mask = (wave_nm >= 300.0) & (wave_nm <= 1050.0)
+    # 3. Dense Extrapolation to 1200 nm
+    if wave_nm[-1] < 1200.0:
+        step = np.median(np.diff(wave_nm))
+        ext_wave = np.arange(wave_nm[-1] + step, 1200.0 + step, step)
+        ext_flux = np.full_like(ext_wave, flux_wm2nm[-1])
+        wave_nm = np.concatenate([wave_nm, ext_wave])
+        flux_wm2nm = np.concatenate([flux_wm2nm, ext_flux])
+
+    # 4. Filter spectral region for safe convolution & cubic interpolation bounds
+    mask = (wave_nm >= wave_grid_nm.min() - 15.0) & (wave_nm <= 1200.0)
     xr_nm = wave_nm[mask]
-    yr_flux = raw_flux[mask]
+    yr_flux = flux_wm2nm[mask]
 
-    if len(xr_nm) == 0:
-        raise ValueError(f"No valid data within range [300, 1050] nm in {fits_path}")
+    if len(xr_nm) < 10:
+        raise ValueError(f"Insufficient data within range [{wave_grid_nm.min()}, {wave_grid_nm.max()}] nm")
 
-    # 3. Apply spectral degradation using the custom convolution function 'c'
-    res_flux = lsf_convolve(xr_nm, yr_flux, xr_nm)
+    # 5. Gaia LSF Convolution
+    res_flux = c_module_correct_lsf(xr_nm, yr_flux, xr_nm)
 
-    # 4. Interpolate degraded spectrum onto the unified grid using cubic splines
+    # 6. Cubic Spline Interpolation directly onto target wavelength grid
     interp_func = interp1d(
         xr_nm, 
         res_flux, 
         kind="cubic", 
         bounds_error=False, 
-        fill_value="extrapolate"
+        fill_value=np.nan
     )
-    
+
     y_aligned = interp_func(wave_grid_nm).astype(np.float32)
 
-    # 5. SAFETY CLIP: Ensure no negative fluxes are generated by the cubic spline
-    y_aligned = np.maximum(y_aligned, 0.0, dtype=np.float32)
+    if np.isnan(y_aligned).any():
+        raise ValueError("CALSPEC spectrum does not fully cover the requested wavelength grid.")
 
     return y_aligned
 
 
-def fetch_gaia_xp_spectrum(
-    source_id: str, 
-    wave_grid_nm: np.ndarray, 
-    fallback_y: np.ndarray
-) -> np.ndarray:
+def safe_float(value: Any, default: float = 0.0) -> float:
     """
-    Retrieves the actual Gaia DR3 XP continuous spectrum via GaiaXPy, or generates 
-    a forward-modeled instrumental observation as a fallback.
+    Safely convert catalog attributes to floating point values with fallback defaults.
 
-    Parameters:
-    - source_id (str): Gaia DR3 source identifier.
-    - wave_grid_nm (np.ndarray): Common target wavelength grid in nanometers.
-    - fallback_y (np.ndarray): Degraded CALSPEC reference target vector.
+    Parameters
+    ----------
+    value : Any
+        Input catalog value (e.g., string, float, integer, NaN).
+    default : float, optional
+        Fallback default value if conversion fails. Default is 0.0.
 
-    Returns:
-    - tuple[np.ndarray, np.ndarray]: Gaia XP input spectrum vector and error vector (float32).
+    Returns
+    -------
+    float
+        Converted float value or default fallback.
     """
-    valid_id = str(source_id).strip()
-    if valid_id not in ["0", "", "nan", "None"]:
-        try:
-            # Query and calibrate continuous Gaia XP spectrum sampled directly on wave_grid_nm
-            calibrated_spectra, _ = gaiaxpy.calibrate(
-                [int(valid_id)], 
-                sampling=wave_grid_nm, 
-                verbose=False
-            )
-            if calibrated_spectra is not None and not calibrated_spectra.empty:
-                x_flux = calibrated_spectra["flux"].iloc[0]
-                x_error = calibrated_spectra["flux_error"].iloc[0]
-                return np.array(x_flux, dtype=np.float32), np.array(x_error, dtype=np.float32)
-        except Exception:
-            pass  # Fall through to simulation if API request fails
-
-    # Fallback simulation: apply instrumental baseline response shift and subtle noise
-    tilt = np.linspace(0.96, 1.04, len(fallback_y), dtype=np.float32)
-    noise_std = 0.005 * np.max(fallback_y)
-    noise = np.random.normal(0.0, noise_std, size=fallback_y.shape).astype(np.float32)
-    x_simulated = (fallback_y * tilt) + noise
-
-    x_error_simulated = np.full_like(x_simulated, noise_std, dtype=np.float32)
-    return np.maximum(x_simulated, 0.0), x_error_simulated
+    if pd.isna(value):
+        return default
+    val_str = str(value).strip()
+    if val_str in ["--", "-", "nan", ""]:
+        return default
+    try:
+        return float(val_str)
+    except ValueError:
+        return default
 
 
 def create_dataset(
-    csv_path: str = "data/processed/catalogs_by_color/solar_catalog.csv",
+    csv_path: str = "data/processed/catalogs_by_color/all_catalog.csv",
     calspec_dir: str = "data/raw/calspec_fits",
-    output_dir: str = "data/processed/nn/solar",
-    n_channels: int = 300,
-    wave_min_nm: float = 340.0,
-    wave_max_nm: float = 1000.0,
+    output_dir: str = "data/processed/nn/all",
+    wave_step_nm: float = 2.0,
+    wave_min_nm: float = 336.0,
+    wave_max_nm: float = 1020.0,
 ) -> None:
     """
-    Main orchestration routine for generating and saving the regression dataset.
+    Generate consolidated (X, Y) spectral datasets by batch-querying GaiaXPy 
+    and processing CALSPEC spectra.
+
+    Parameters
+    ----------
+    csv_path : str, optional
+        Path to the cross-matched catalog CSV file.
+    calspec_dir : str, optional
+        Directory containing CALSPEC FITS files.
+    output_dir : str, optional
+        Destination directory to export processed NumPy array files (.npy).
+    wave_step_nm : float, optional
+        Grid wavelength step size in nanometers. Default is 2.0.
+    wave_min_nm : float, optional
+        Minimum wavelength bound in nanometers. Default is 336.0.
+    wave_max_nm : float, optional
+        Maximum wavelength bound in nanometers. Default is 1020.0.
+
+    Returns
+    -------
+    None
     """
     print("=" * 60)
     print("EXECUTING PIPELINE: GENERATING (X, Y) SPECTRAL DATASET")
@@ -148,57 +247,82 @@ def create_dataset(
     abs_output_dir = os.path.abspath(output_dir)
 
     if not os.path.exists(abs_csv_path):
-        print(f"[!] Critical Error: Catalog metadata file missing: {abs_csv_path}")
+        print(f"[!] Critical Error: Catalog missing: {abs_csv_path}")
         return
 
-    # Define homogeneous wavelength grid ($\lambda$)
-    wave_length_grid = np.linspace(wave_min_nm, wave_max_nm, n_channels, dtype=np.float32)
+    # Standardized wavelength grid for both Gaia and CALSPEC spectra
+    wave_length_grid = np.arange(wave_min_nm, wave_max_nm + wave_step_nm, wave_step_nm, dtype=np.float32)
+    df_catalog = pd.read_csv(abs_csv_path, dtype={"gaia_source_id": str})
 
-    df_catalog = pd.read_csv(abs_csv_path)
-    print(f"-> Crossmatch targets loaded: {len(df_catalog)}")
-    print(f"-> Target wavelength grid: {n_channels} channels [{wave_min_nm} nm - {wave_max_nm} nm]")
+    valid_gaia_ids = []
+    for _, row in df_catalog.iterrows():
+        raw_id = row.get("gaia_source_id", "0")
+        if pd.notna(raw_id) and str(raw_id).strip().lower() != "nan":
+            valid_gaia_ids.append(int(str(raw_id).split(".")[0].strip()))
 
-    # Identify files physically present in the directory
-    available_fits = []
-    if os.path.exists(abs_calspec_dir):
-        available_fits = [
-            f for f in os.listdir(abs_calspec_dir) 
-            if os.path.isfile(os.path.join(abs_calspec_dir, f))
-        ]
-    print(f"-> FITS files available in directory: {len(available_fits)}")
-    print("-" * 60)
+    chunk_size = 5
+    gaia_dict = {}
+    total_chunks = (len(valid_gaia_ids) + chunk_size - 1) // chunk_size
 
-    X_list = []
-    Y_list = []
-    X_error_list = []
-    G_mags_list = []
-    bp_rp_list = []
-    ruwe_list = []
-    processed_stars = []
-    processed_ids = []
+    print(f"-> Querying GaiaXPy for {len(valid_gaia_ids)} sources in {total_chunks} chunks...")
+
+    for i in range(0, len(valid_gaia_ids), chunk_size):
+        chunk = valid_gaia_ids[i : i + chunk_size]
+        current_chunk = (i // chunk_size) + 1
+        print(f"  Downloading chunk {current_chunk}/{total_chunks} ({len(chunk)} sources)...")
+
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Fetch sampled spectra directly on wave_length_grid
+                calibrated_spectra, _ = gaiaxpy.calibrate(chunk, sampling=wave_length_grid)
+                if calibrated_spectra is not None and not calibrated_spectra.empty:
+                    chunk_dict = calibrated_spectra.set_index("source_id").to_dict(orient="index")
+                    gaia_dict.update(chunk_dict)
+                break
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    print(f"      [!] Connection error. Retrying... (Attempt {attempt+2}/{max_retries})")
+                    time.sleep(5)
+                else:
+                    print(f"      [X] Failed chunk {current_chunk} after {max_retries} attempts: {e}")
+
+    if not gaia_dict:
+        print("[!] Critical Error: Could not retrieve any Gaia data from servers.")
+        return
+
+    print(f"-> Gaia data downloaded successfully. Extracted {len(gaia_dict)} spectra.")
+
+    available_fits = [f.lower() for f in os.listdir(abs_calspec_dir)] if os.path.exists(abs_calspec_dir) else []
+    real_fits_names = {f.lower(): f for f in os.listdir(abs_calspec_dir)} if available_fits else {}
+
+    X_list, Y_list, X_error_list = [], [], []
+    G_mags_list, bp_rp_list, ruwe_list = [], [], []
+    processed_stars, processed_ids = [], []
 
     for idx, row in df_catalog.iterrows():
         star_name = str(row.get("calspec_name", row.get("Name"))).strip()
         fits_filename = str(row.get("fits_file", row.get("File_Source"))).strip()
-        gaia_id = str(row.get("gaia_source_id", "0")).strip()
-        
-        g_mag = float(row.get("phot_g_mean_mag", 15.0))
-        bp_rp = float(row.get("bp_rp", 0.75))
-        ruwe = float(row.get("ruwe", 1.0))
 
-        # Match target FITS filename (exact or case-insensitive)
+        raw_id = row.get("gaia_source_id", "0")
+        if pd.isna(raw_id) or str(raw_id).strip().lower() == "nan":
+            continue
+
+        gaia_id = int(str(raw_id).split(".")[0].strip())
+
+        if gaia_id not in gaia_dict:
+            print(f"  [X] {star_name:<15} -> Missing Gaia spectrum in batch download.")
+            continue
+
         matched_filename = None
-        if fits_filename in available_fits:
-            matched_filename = fits_filename
+        fits_lower = fits_filename.lower()
+        if fits_lower in real_fits_names:
+            matched_filename = real_fits_names[fits_lower]
         else:
-            fits_lower = fits_filename.lower()
-            star_lower = star_name.lower()
-            for f in available_fits:
-                f_lower = f.lower()
-                if f_lower == fits_lower or (
-                    f_lower.startswith(star_lower) and f_lower.endswith((".fits", ".fit"))
-                ):
-                    matched_filename = f
+            for f_lower, real_name in real_fits_names.items():
+                if f_lower.startswith(star_name.lower()) and f_lower.endswith((".fits", ".fit")):
+                    matched_filename = real_name
                     break
 
         if not matched_filename:
@@ -208,62 +332,87 @@ def create_dataset(
         fits_full_path = os.path.join(abs_calspec_dir, matched_filename)
 
         try:
-            # 1. Process Ground Truth target matrix (Y) using CALSPEC + "c" module
+            x_input = np.array(gaia_dict[gaia_id]["flux"], dtype=np.float32)
+            x_error = np.array(gaia_dict[gaia_id]["flux_error"], dtype=np.float32)
+
+            if np.isnan(x_input).any() or np.isnan(x_error).any():
+                raise ValueError("Gaia returned NaN values for this spectrum.")
+
+            # Process ground truth spectrum Y (CALSPEC) via LSF convolution & interpolation
             y_target = process_calspec_target(fits_full_path, wave_length_grid)
 
-            # 2. Extract or simulate Input feature spectrum (X) from Gaia DR3
-            x_input, x_error = fetch_gaia_xp_spectrum(gaia_id, wave_length_grid, y_target)
+            # --- FLUX SCALE VALIDATION ---
+            median_x = np.nanmedian(x_input)
+            median_y = np.nanmedian(y_target)
+
+            if median_x > 0 and median_y > 0:
+                ratio = median_x / median_y
+                if ratio > 100.0 or ratio < 0.01:
+                    raise ValueError(f"Flux scale mismatch! Gaia med: {median_x:.2e}, CALSPEC med: {median_y:.2e}")
+            else:
+                raise ValueError(f"Invalid median flux. Gaia: {median_x:.2e}, CALSPEC: {median_y:.2e}")
+
+            y_target = y_target.astype(np.float32)
 
             X_list.append(x_input)
             Y_list.append(y_target)
             X_error_list.append(x_error)
-            G_mags_list.append(g_mag)
-            bp_rp_list.append(bp_rp)
-            ruwe_list.append(ruwe)
+            G_mags_list.append(safe_float(row.get("phot_g_mean_mag"), 15.0))
+            bp_rp_list.append(safe_float(row.get("bp_rp"), 0.75))
+            ruwe_list.append(safe_float(row.get("ruwe"), 1.0))
             processed_stars.append(star_name)
-            processed_ids.append(gaia_id)
+            processed_ids.append(str(gaia_id))
 
-            print(f"  [✓] {star_name:<15} -> Successfully processed (Gaia ID: {gaia_id})")
+            print(f"  [✓] {star_name:<15} -> Successfully processed")
 
         except Exception as e:
             print(f"  [!] {star_name:<15} -> Failed processing: {e}")
             continue
 
     if not processed_stars:
-        print("\n[!] Critical Error: Zero stars were processed. Dataset generation aborted.")
+        print("\n[!] Critical Error: Zero stars were successfully processed.")
         return
 
-    # Convert arrays to PyTorch-compatible float32 matrices
-    X = np.array(X_list, dtype=np.float32)
-    Y = np.array(Y_list, dtype=np.float32)
-    X_error = np.array(X_error_list, dtype=np.float32)
-    G_mags = np.array(G_mags_list, dtype=np.float32)
-    BP_RP = np.array(bp_rp_list, dtype=np.float32)
-    RUWE = np.array(ruwe_list, dtype=np.float32)
+    # Convert python lists to NumPy arrays
+    X_np = np.array(X_list, dtype=np.float32)
+    Y_np = np.array(Y_list, dtype=np.float32)
+    X_err_np = np.array(X_error_list, dtype=np.float32)
 
-    # Persist dataset to disk
+    # --- DATA TRANSFORMATIONS FOR NEURAL NETWORK TRAINING ---
+    # 1. Normalized inputs (X_norm): Scale each spectrum by its maximum flux
+    scales = np.max(X_np, axis=1, keepdims=True) + 1e-30
+    X_norm_np = X_np / scales
+
+    # 2. Target correction ratio (Y_ratio): Spectral response curve R to be predicted
+    Y_ratio_np = Y_np / np.clip(X_np, 1e-30, None)
+    # Clip extreme boundary values caused by low S/N edges to stabilize neural network target
+    Y_ratio_np = np.clip(Y_ratio_np, 0.3, 3.0)
+
+    # 3. Normalized fractional errors (Errors_norm): Fractional error propagation for heteroscedastic loss
+    # Fractional uncertainty propagation: sigma_R / R ≈ sigma_X / X
+    Errors_norm_np = X_err_np / np.clip(X_np, 1e-30, None)
+
     os.makedirs(abs_output_dir, exist_ok=True)
-    np.save(os.path.join(abs_output_dir, "X.npy"), X)
-    np.save(os.path.join(abs_output_dir, "Y.npy"), Y)
-    np.save(os.path.join(abs_output_dir, "X_error.npy"), X_error)
-    np.save(os.path.join(abs_output_dir, "G_mags.npy"), G_mags)
-    np.save(os.path.join(abs_output_dir, "bp_rp.npy"), BP_RP)
-    np.save(os.path.join(abs_output_dir, "ruwe.npy"), RUWE)
+    
+    # Save absolute datasets for metric evaluations
+    np.save(os.path.join(abs_output_dir, "X.npy"), X_np)
+    np.save(os.path.join(abs_output_dir, "Y.npy"), Y_np)
+    np.save(os.path.join(abs_output_dir, "X_error.npy"), X_err_np)
+
+    # Save normalized tensors formatted for neural network training
+    np.save(os.path.join(abs_output_dir, "X_norm.npy"), X_norm_np)
+    np.save(os.path.join(abs_output_dir, "Y_ratio.npy"), Y_ratio_np)
+    np.save(os.path.join(abs_output_dir, "Errors_norm.npy"), Errors_norm_np)
+
+    # Save stellar parameters and metadata arrays
+    np.save(os.path.join(abs_output_dir, "G_mags.npy"), np.array(G_mags_list, dtype=np.float32))
+    np.save(os.path.join(abs_output_dir, "bp_rp.npy"), np.array(bp_rp_list, dtype=np.float32))
+    np.save(os.path.join(abs_output_dir, "ruwe.npy"), np.array(ruwe_list, dtype=np.float32))
     np.save(os.path.join(abs_output_dir, "star_names.npy"), np.array(processed_stars))
     np.save(os.path.join(abs_output_dir, "gaia_source_ids.npy"), np.array(processed_ids))
     np.save(os.path.join(abs_output_dir, "wave_grid.npy"), wave_length_grid)
 
-    print("\n" + "=" * 60)
-    print("            DATASET GENERATION COMPLETE SUMMARY")
-    print("=" * 60)
-    print(f"Total Valid Targets Exported     : {len(processed_stars)}")
-    print(f"Input Features Matrix Shape (X)  : {X.shape} (float32)")
-    print(f"Input Errors Matrix Shape (X_err): {X_error.shape} (float32)")
-    print(f"Target Ground Truth Shape (Y)    : {Y.shape} (float32)")
-    print(f"Stellar Params Extracted         : G_mags, bp_rp, ruwe ({len(G_mags)} samples each)")
-    print(f"Wavelength Grid Storage Vector   : {wave_length_grid.shape} channels")
-    print(f"Output Directory Location        : {abs_output_dir}")
-    print("=" * 60 + "\n")
+    print("\nDataset generation complete.")
 
 
 if __name__ == "__main__":

@@ -9,56 +9,54 @@ Neural Networks (PINNs) applied to Gaia spectrophotometric recalibration. The st
 combines stochastic first-order gradient descent (Adam) for rapid global trajectory 
 exploration with quasi-Newton second-order full-batch optimization (L-BFGS) for 
 high-precision asymptotic convergence near physical minima.
-
-Optimization Pipeline:
-    1. Stage 1 (Adam Optimization):
-       Operates on mini-batched dataloaders. Navigates complex non-convex loss landscapes, 
-       handles irregular feature spaces, and incorporates gradient norm clipping to prevent 
-       exploding gradients near sharp spectral absorption features.
-    2. Stage 2 (L-BFGS Refinement):
-       Operates on the complete full-batch dataset. Utilizes second-order curvature 
-       information via Line Search under Strong Wolfe conditions to converge tightly 
-       around physics-constrained local minima.
 """
 
 from typing import Dict, List, Optional, Tuple
-
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+
 def train_adam_fixed(
-    model: torch.nn.Module, 
+    model: nn.Module, 
     epochs: int, 
     dataloader: DataLoader, 
-    physics_criterion: torch.nn.Module, 
+    physics_criterion: nn.Module, 
     lr: float = 0.001
-) -> Tuple[torch.nn.Module, Dict[str, List[float]]]:
+) -> Tuple[nn.Module, Dict[str, List[float]]]:
     """
-    Stage 1: Stable Adam training using fixed physics constraints.
+    Train a Physics-Informed Neural Network using the Adam optimizer (Stage 1).
 
-    Performs the initial broad optimization phase using the Adam optimizer. Adam provides 
-    robust first-order gradient-based updates to rapidly navigate the loss landscape and 
-    locate a viable basin of attraction. Applies gradient norm clipping to ensure numerical stability.
+    Executes mini-batch first-order stochastic gradient descent over a specified 
+    number of epochs. Flexibly handles variable-length input batch structures 
+    and multi-term physics loss components while clipping gradient norms to 
+    prevent exploding gradients.
 
     Parameters
     ----------
-    model : torch.nn.Module
-        The neural network model to be trained.
+    model : nn.Module
+        The PyTorch PINN model to be trained.
     epochs : int
-        The total number of training epochs for this optimization stage.
+        Number of full training epochs to perform.
     dataloader : DataLoader
-        PyTorch DataLoader providing batched training data (X, Y, and optional auxiliary parameters).
-    physics_criterion : torch.nn.Module
-        The custom physics-informed loss function evaluating residuals and constraints.
+        DataLoader providing mini-batches of training spectra, targets, and auxiliary parameters.
+    physics_criterion : nn.Module
+        Physics-informed loss function returning a tuple of loss components.
     lr : float, default=0.001
-        The learning rate for the Adam optimizer.
+        Learning rate for the Adam optimizer.
 
     Returns
     -------
-    Tuple[torch.nn.Module, Dict[str, List[float]]]
-        - The model with updated weights after Stage 1 training.
-        - Dictionary containing historical epoch-wise loss traces ('total_loss', 'loss_flux', 'loss_smooth').
+    Tuple[nn.Module, Dict[str, List[float]]]
+        A tuple containing:
+        - model : The trained PyTorch model instance.
+        - history : Dictionary mapping loss component names to per-epoch average float values:
+            - 'total_loss': Aggregated objective loss.
+            - 'recon_loss': Scaled flux reconstruction error.
+            - 'loss_deriv': Sobolev first-derivative alignment loss.
+            - 'loss_anchor': Integrated flux anchor loss.
+            - 'smooth_loss': Second-derivative response curve smoothness penalty.
     """
     device = next(model.parameters()).device
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -66,213 +64,268 @@ def train_adam_fixed(
     model.train()
     pbar = tqdm(range(epochs), desc=">>> Stage 1: Adam Training", unit="epoch")
 
-    history = {"total_loss": [], "loss_flux": [], "loss_smooth": []}
+    history: Dict[str, List[float]] = {
+        "total_loss": [], 
+        "recon_loss": [], 
+        "loss_deriv": [], 
+        "loss_anchor": [], 
+        "smooth_loss": []
+    }
+
     for epoch in pbar:
-        epoch_total_loss = 0.0
-        epoch_flux_loss = 0.0
-        epoch_smooth_loss = 0.0
+        epoch_losses = {k: 0.0 for k in history.keys()}
 
         for batch in dataloader:
-            if len(batch) == 3:
-                X_batch, Y_batch, params_batch = batch[0].to(device), batch[1].to(device), batch[2].to(device)
+            # Flexible batch unpacking to support optional auxiliary parameter tensors
+            if len(batch) == 5:
+                X_batch, Y_batch, params_batch, err_batch, X_smooth_batch = [b.to(device) for b in batch]
+            elif len(batch) == 4:
+                X_batch, Y_batch, params_batch, err_batch = [b.to(device) for b in batch]
+                X_smooth_batch = None
+            elif len(batch) == 3:
+                X_batch, Y_batch, params_batch = [b.to(device) for b in batch]
+                err_batch, X_smooth_batch = None, None
             else:
-                # Fallback for safety if an older dataset is used
                 X_batch, Y_batch = batch[0].to(device), batch[1].to(device)
-                params_batch = None
+                params_batch, err_batch, X_smooth_batch = None, None, None
 
             optimizer.zero_grad()
 
-            # Forward pass and compute the combined physics-informed loss components
-            total_loss, loss_flux, loss_smooth = physics_criterion(model, X_batch, Y_batch, params_batch)
+            # Flexible unpacking for varying loss criteria returns
+            losses = physics_criterion(
+                model, X_batch, Y_batch, 
+                params=params_batch, x_err=err_batch
+            )
+            
+            # Map returns dynamically to avoid tuple unpacking errors
+            total_loss = losses[0]
+            recon_loss = losses[1] if len(losses) > 1 else torch.tensor(0.0, device=device)
+            
+            if len(losses) == 5:
+                loss_deriv, loss_anchor, smooth_loss = losses[2], losses[3], losses[4]
+            elif len(losses) == 3:
+                smooth_loss = losses[2]
+                loss_deriv = torch.tensor(0.0, device=device)
+                loss_anchor = torch.tensor(0.0, device=device)
+            else:
+                loss_deriv = torch.tensor(0.0, device=device)
+                loss_anchor = torch.tensor(0.0, device=device)
+                smooth_loss = torch.tensor(0.0, device=device)
 
-            # Robust error handling: Check for numerical instabilities
             if torch.isnan(total_loss):
                 tqdm.write(f" [!] NaN detected at epoch {epoch}. Skipping batch step.")
                 continue
 
             total_loss.backward()
-
-            # Clip gradients to prevent gradient explosion (max_norm = 1.0)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
-            epoch_total_loss += total_loss.item()
-            epoch_flux_loss += loss_flux.item()
-            epoch_smooth_loss += loss_smooth.item()
+            epoch_losses["total_loss"] += total_loss.item()
+            epoch_losses["recon_loss"] += recon_loss.item()
+            epoch_losses["loss_deriv"] += loss_deriv.item()
+            epoch_losses["loss_anchor"] += loss_anchor.item()
+            epoch_losses["smooth_loss"] += smooth_loss.item()
 
         num_batches = len(dataloader)
-        history["total_loss"].append(epoch_total_loss / num_batches)
-        history["loss_flux"].append(epoch_flux_loss / num_batches)
-        history["loss_smooth"].append(epoch_smooth_loss / num_batches)
+        for k in history.keys():
+            history[k].append(epoch_losses[k] / num_batches)
 
-        # Update progress bar every 10 epochs for cleaner output
         if epoch % 10 == 0:
-            avg_epoch_loss = epoch_total_loss / len(dataloader)
-            pbar.set_postfix({"Total Loss": f"{avg_epoch_loss:.4e}"})
+            pbar.set_postfix({"Total Loss": f"{history['total_loss'][-1]:.4e}"})
 
     return model, history
 
+
 def train_lbfgs_fixed(
-    model: torch.nn.Module, 
+    model: nn.Module, 
     X_full: torch.Tensor, 
     Y_full: torch.Tensor, 
-    params_full: Optional[torch.Tensor], 
-    physics_criterion: torch.nn.Module, 
+    params_full: Optional[torch.Tensor],
+    err_full: Optional[torch.Tensor],
+    X_smooth_full: Optional[torch.Tensor],
+    physics_criterion: nn.Module, 
     steps: int = 10
-) -> Tuple[torch.nn.Module, Dict[str, List[float]]]:
+) -> Tuple[nn.Module, Dict[str, List[float]]]:
     """
-    Stage 2: High-precision refinement stage using the L-BFGS optimizer.
+    Refine a Physics-Informed Neural Network using L-BFGS optimization (Stage 2).
 
-    Following Adam optimization, this stage leverages L-BFGS (a quasi-Newton, second-order 
-    optimization algorithm) to fine-tune network weights. L-BFGS is highly effective at finding 
-    precise local minima once parameters are brought into the correct basin of attraction. 
-    This stage processes the entire dataset at once (full-batch) utilizing line searches 
-    under Strong Wolfe conditions.
+    Applies second-order quasi-Newton optimization (L-BFGS with Strong Wolfe 
+    line search) on full-batch dataset tensors to converge tightly to physical local minima.
 
     Parameters
     ----------
-    model : torch.nn.Module
-        The neural network model, pre-trained during Stage 1.
+    model : nn.Module
+        The PyTorch PINN model pre-trained by Stage 1 (Adam).
     X_full : torch.Tensor
-        The complete tensor of uncalibrated input spectra.
+        Complete uncalibrated input spectra tensor of shape `(N, num_channels)`.
     Y_full : torch.Tensor
-        The complete tensor of target reference spectra.
+        Complete target reference spectra tensor of shape `(N, num_channels)`.
     params_full : torch.Tensor, optional
-        The complete tensor of auxiliary stellar physical parameters.
-    physics_criterion : torch.nn.Module
-        The custom physics-informed loss function.
+        Complete normalized stellar parameters tensor of shape `(N, num_params)`.
+    err_full : torch.Tensor, optional
+        Complete flux error measurement tensor of shape `(N, num_channels)`.
+    X_smooth_full : torch.Tensor, optional
+        Complete pre-smoothed continuous input spectra tensor.
+    physics_criterion : nn.Module
+        Physics-informed loss function returning a tuple of loss components.
     steps : int, default=10
-        The number of top-level L-BFGS optimization steps to perform.
+        Number of full-batch L-BFGS optimization iterations to perform.
 
     Returns
     -------
-    Tuple[torch.nn.Module, Dict[str, List[float]]]
-        - Refined PyTorch model instance.
-        - Dictionary containing historical step-wise loss traces.
+    Tuple[nn.Module, Dict[str, List[float]]]
+        A tuple containing:
+        - model : The refined PyTorch model instance.
+        - history : Dictionary mapping loss component names to per-step float values:
+            - 'total_loss': Aggregated objective loss.
+            - 'recon_loss': Scaled flux reconstruction error.
+            - 'loss_deriv': Sobolev first-derivative alignment loss.
+            - 'loss_anchor': Integrated flux anchor loss.
+            - 'smooth_loss': Second-derivative response curve smoothness penalty.
     """
     device = next(model.parameters()).device
     X_full, Y_full = X_full.to(device), Y_full.to(device)
     if params_full is not None:
         params_full = params_full.to(device)
+    if err_full is not None:
+        err_full = err_full.to(device)
 
-    # Initialize L-BFGS with standard parameters for deep learning refinement
+    model.eval()
+
     optimizer = torch.optim.LBFGS(
-        model.parameters(), 
-        lr=0.1, 
-        max_iter=20, 
-        history_size=10, 
-        line_search_fn="strong_wolfe"
+        model.parameters(), lr=0.1, max_iter=20, 
+        history_size=10, line_search_fn="strong_wolfe"
     )
 
     pbar = tqdm(total=steps, desc=">>> Stage 2: L-BFGS Refinement", unit="step")
 
-    # Optional hook: Prepare specific model parameters for L-BFGS if required
-    # (e.g., freezing certain layers or adjusting batch norm statistics)
     if hasattr(model, "prepare_for_lbfgs"):
-        model.prepare_for_lbfgs()
+        getattr(model, "prepare_for_lbfgs")()
 
-    history = {"total_loss": [], "loss_flux": [], "loss_smooth": []}
-    step_losses = {}
+    history: Dict[str, List[float]] = {
+        "total_loss": [], 
+        "recon_loss": [], 
+        "loss_deriv": [], 
+        "loss_anchor": [], 
+        "smooth_loss": []
+    }
+    step_losses: Dict[str, float] = {}
 
     def closure() -> torch.Tensor:
-        """
-        Closure function required by L-BFGS to re-evaluate the loss 
-        multiple times per step during the line search process.
-        """
         optimizer.zero_grad()
-        total_loss, loss_flux, loss_smooth = physics_criterion(model, X_full, Y_full, params_full)
+
+        losses = physics_criterion(
+            model, X_full, Y_full, 
+            params=params_full, x_err=err_full
+        )
+
+        total_loss = losses[0]
+        recon_loss = losses[1] if len(losses) > 1 else torch.tensor(0.0, device=device)
+        
+        if len(losses) == 5:
+            loss_deriv, loss_anchor, smooth_loss = losses[2], losses[3], losses[4]
+        elif len(losses) == 3:
+            smooth_loss = losses[2]
+            loss_deriv = torch.tensor(0.0, device=device)
+            loss_anchor = torch.tensor(0.0, device=device)
+        else:
+            loss_deriv = torch.tensor(0.0, device=device)
+            loss_anchor = torch.tensor(0.0, device=device)
+            smooth_loss = torch.tensor(0.0, device=device)
 
         if total_loss.requires_grad:
             total_loss.backward()
 
-        step_losses["total"] = total_loss.item()
-        step_losses["flux"] = loss_flux.item()
-        step_losses["smooth"] = loss_smooth.item()
+        step_losses["total_loss"] = total_loss.item()
+        step_losses["recon_loss"] = recon_loss.item()
+        step_losses["loss_deriv"] = loss_deriv.item()
+        step_losses["loss_anchor"] = loss_anchor.item()
+        step_losses["smooth_loss"] = smooth_loss.item()
 
         return total_loss
 
     for _ in range(steps):
         loss_val = optimizer.step(closure)
 
-        history["total_loss"].append(step_losses["total"])
-        history["loss_flux"].append(step_losses["flux"])
-        history["loss_smooth"].append(step_losses["smooth"])
+        for k in history.keys():
+            history[k].append(step_losses[k])
         
         pbar.update(1)
-        pbar.set_postfix({"Loss": f"{loss_val.item():.4e}"})
+        val_display = loss_val.item() if loss_val is not None else step_losses["total_loss"]
+        pbar.set_postfix({"Loss": f"{val_display:.4e}"})
 
     pbar.close()
     return model, history
 
+
 def train_2stage_fixed(
-    model: torch.nn.Module, 
+    model: nn.Module, 
     dataloader: DataLoader, 
     X_full: torch.Tensor, 
     Y_full: torch.Tensor, 
     params_full: Optional[torch.Tensor],
-    physics_criterion: torch.nn.Module, 
+    err_full: Optional[torch.Tensor],
+    X_smooth_full: Optional[torch.Tensor],
+    physics_criterion: nn.Module, 
     epochs_adam: int = 1000, 
     steps_lbfgs: int = 10
-) -> Tuple[torch.nn.Module, Dict[str, List[float]]]:
+) -> Tuple[nn.Module, Dict[str, List[float]]]:
     """
-    Executes the complete, definitive two-stage training pipeline (Adam + L-BFGS).
+    Orchestrate the complete two-stage PINN training pipeline (Adam + L-BFGS).
 
-    Acts as the primary orchestrator for the PINN training pipeline by sequentially 
-    invoking robust first-order Adam mini-batch training followed by high-precision 
-    second-order L-BFGS full-batch refinement.
+    Combines stochastic first-order optimization (Stage 1: Adam) for global trajectory 
+    exploration with full-batch quasi-Newton optimization (Stage 2: L-BFGS) for high-precision 
+    asymptotic parameter refinement.
 
     Parameters
     ----------
-    model : torch.nn.Module
-        The initialized neural network model instance.
+    model : nn.Module
+        The PyTorch PINN model to be trained.
     dataloader : DataLoader
-        Batched DataLoader for Stage 1 (Adam optimization).
+        DataLoader providing mini-batches for Stage 1 Adam optimization.
     X_full : torch.Tensor
-        Full uncalibrated dataset tensor for Stage 2 (L-BFGS refinement).
+        Full uncalibrated spectra tensor for Stage 2 L-BFGS optimization.
     Y_full : torch.Tensor
-        Full reference dataset tensor for Stage 2 (L-BFGS refinement).
+        Full ground-truth reference spectra tensor for Stage 2 L-BFGS optimization.
     params_full : torch.Tensor, optional
-        Full auxiliary physical parameters tensor for Stage 2 (L-BFGS refinement).
-    physics_criterion : torch.nn.Module
-        The loss function computing data fidelity and physical constraints.
+        Full normalized stellar parameters tensor for Stage 2 L-BFGS optimization.
+    err_full : torch.Tensor, optional
+        Full measurement uncertainties tensor for Stage 2 L-BFGS optimization.
+    X_smooth_full : torch.Tensor, optional
+        Full pre-smoothed input spectra tensor for Stage 2 L-BFGS optimization.
+    physics_criterion : nn.Module
+        Physics-informed loss function returning a tuple of loss terms.
     epochs_adam : int, default=1000
-        Number of epochs for the Adam optimizer stage.
+        Number of training epochs for Stage 1 (Adam).
     steps_lbfgs : int, default=10
-        Number of optimization steps for the L-BFGS optimizer stage.
+        Number of optimization steps for Stage 2 (L-BFGS).
 
     Returns
     -------
-    Tuple[torch.nn.Module, Dict[str, List[float]]]
-        - Fully trained and refined network model.
-        - Merged history dictionary containing concatenated loss traces from both training stages.
+    Tuple[nn.Module, Dict[str, List[float]]]
+        A tuple containing:
+        - model : The fully trained and refined PyTorch PINN model instance.
+        - history_combined : Concatenated loss history dictionary containing metrics 
+          across all Adam epochs and L-BFGS refinement steps.
     """
     print("=" * 60)
     print("[7.1] EXECUTING DEFINITIVE 2-STAGE TRAINING PIPELINE")
     print("=" * 60)
 
-    # Stage 1: Broad optimization using Adam
     model, history_adam = train_adam_fixed(
-        model, 
-        epochs=epochs_adam, 
-        dataloader=dataloader, 
-        physics_criterion=physics_criterion,
-        lr=0.001
+        model, epochs=epochs_adam, dataloader=dataloader, 
+        physics_criterion=physics_criterion, lr=0.001
     )
 
-    # Stage 2: Fine-tuning refinement using L-BFGS
     model, history_lbfgs = train_lbfgs_fixed(
-        model,
-        X_full=X_full,
-        Y_full=Y_full, 
-        params_full=params_full,
-        physics_criterion=physics_criterion,
-        steps=steps_lbfgs
+        model, X_full=X_full, Y_full=Y_full, params_full=params_full,
+        err_full=err_full, X_smooth_full=X_smooth_full,
+        physics_criterion=physics_criterion, steps=steps_lbfgs
     )
 
     history_combined = {
-        "total_loss": history_adam["total_loss"] + history_lbfgs["total_loss"],
-        "loss_flux": history_adam["loss_flux"] + history_lbfgs["loss_flux"],
-        "loss_smooth": history_adam["loss_smooth"] + history_lbfgs["loss_smooth"]
+        key: history_adam[key] + history_lbfgs[key] 
+        for key in history_adam.keys()
     }
 
     print("\n-> Training pipeline successfully completed.")

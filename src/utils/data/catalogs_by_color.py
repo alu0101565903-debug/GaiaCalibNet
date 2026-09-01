@@ -1,6 +1,6 @@
 """
 Module: catalogs_by_color.py
-Report Section: 
+Report Section: Chapter 5 Data Processing & Feature Engineering
 
 CALSPEC Spectral Type Categorization & Color Catalog Generator.
 
@@ -24,28 +24,37 @@ Classification Rules (Morgan-Keenan Scheme & Exceptions):
 from __future__ import annotations
 
 import os
+import re
+from typing import Dict, List, Tuple
+
 import pandas as pd
 
 
 def load_spectral_lookup(calspec_table_path: str) -> dict[str, str]:
-    """"
+    """
     Build a case-insensitive lookup dictionary mapping object names to spectral types.
 
     Parameters
-    - calspec_table_path (str)
+    ----------
+    calspec_table_path : str
         Path to the reference CSV file containing CALSPEC metadata. 
         Must include columns "Name" and "Sp. T.".
 
     Returns
-    - Dict[str, str]: Dictionary formatted as `{normalized_name: spectral_type_string}`.
+    -------
+    dict[str, str]
+        Dictionary formatted as `{normalized_name: spectral_type_string}`.
 
     Raises
-    - FileNotFoundError: If `calspec_table_path` does not exist.
-    - ValueError: If mandatory columns ("Name", "Sp. T.") are missing from the input file.
+    ------
+    FileNotFoundError
+        If `calspec_table_path` does not exist on disk.
+    ValueError
+        If required columns ("Name", "Sp. T.") are missing from the input file.
     """
     if not os.path.exists(calspec_table_path):
         raise FileNotFoundError(f"CALSPEC table not found at: {calspec_table_path}")
-    
+
     df = pd.read_csv(calspec_table_path)
 
     required = {"Name", "Sp. T."}
@@ -53,17 +62,20 @@ def load_spectral_lookup(calspec_table_path: str) -> dict[str, str]:
 
     if missing:
         raise ValueError(
-            f"Missing columns in CALSPEC table: {missing}"
+            f"Missing required columns in CALSPEC table: {missing}"
         )
 
     lookup: dict[str, str] = {}
 
     for _, row in df.iterrows():
+        if pd.isna(row["Name"]) or pd.isna(row["Sp. T."]):
+            continue
+
         name = str(row["Name"]).strip().lower()
         sp = str(row["Sp. T."]).strip()
 
         # Omit invalid entries and STScI placeholder strings ("...")
-        if name and sp and sp != "...":
+        if name and sp and sp != "..." and sp.lower() != "nan":
             lookup[name] = sp
 
     return lookup
@@ -74,44 +86,50 @@ def spectral_type_to_color(sp_type: str) -> str:
     Map a Morgan-Keenan or degenerate spectral type string to a color category.
 
     Parameters
-    - sp_type (str): Raw spectral classification string (e.g., "G2V", "DA3", "B5III+DV", "sdF8").
+    ----------
+    sp_type : str
+        Raw spectral classification string (e.g., "G2V", "DA3", "B5III+DV", "sdF8").
 
     Returns
-    - str: One of the color labels: "Blue", "Solar", "Red", or "Unknown".
+    -------
+    str
+        One of the color labels: "Blue", "Solar", "Red", or "Unknown".
     """
     if pd.isna(sp_type):
         return "Unknown"
 
     s = str(sp_type).upper().strip()
 
-    if not s or s == "...":
+    if not s or s in ("...", "NAN", "NONE"):
         return "Unknown"
 
-    # Remove internal whitespaces (e.g., "G 2 V" -> "G2V")
+    # Clean string: remove parenthetical notes, spaces, and uncertainty flags
+    s = re.sub(r"\(.*?\)", "", s)
     s = s.replace(" ", "")
-
-    # Clean binary/composite spectral types by isolating the primary component
-    s = s.split("+")[0]
-    s = s.split("/")[0]
+    s = re.split(r"[+/,\-_]", s)[0]
+    s = s.rstrip(":?")
 
     # Explicit handling for hot compact stars & white dwarfs   
-    if s.startswith(("SDO", "SDB", "DA", "DB", "DO")):
+    if s.startswith(("WD", "DA", "DB", "DO", "DC", "DZ", "DQ", "DX", "PG")):
         return "Blue"
 
     # Explicit handling for solar-like metal-poor subdwarfs
-    if s.startswith("SDF"):
-        return "Solar"
+    if s.startswith("SD"):
+        s = s[2:]
+
+    if not s:
+        return "Unknown"
 
     # Standard Morgan-Keenan first-character classification
     first_char = s[0]
 
-    if first_char in ("O", "B", "A"):
+    if first_char in ("O", "B", "A", "W"):
         return "Blue"
 
     if first_char in ("F", "G"):
         return "Solar"
 
-    if first_char in ("K", "M", "L", "T", "Y"):
+    if first_char in ("K", "M", "L", "T", "Y", "C", "S"):
         return "Red"
 
     return "Unknown"
@@ -125,11 +143,16 @@ def get_spectral_type(
     Retrieve the spectral type string for a given CALSPEC object name.
 
     Parameters
-    - calspec_name (str): Target star identifier in CALSPEC (case-insensitive).
-    - lookup (Dict[str, str]): Lookup dictionary loaded via `load_spectral_lookup`.
+    ----------
+    calspec_name : str
+        Target star identifier in CALSPEC (case-insensitive).
+    lookup : dict[str, str]
+        Lookup dictionary loaded via `load_spectral_lookup`.
 
     Returns
-    - str: Spectral type string if present in lookup, otherwise "Unknown".
+    -------
+    str
+        Spectral type string if present in `lookup`, otherwise "Unknown".
     """
     key = str(calspec_name).strip().lower()
     return lookup.get(key, "Unknown")
@@ -144,15 +167,21 @@ def group_catalog_by_color(
     Annotate a crossmatch catalog DataFrame with spectral types and color classes.
 
     Parameters
-    - df (pd.DataFrame): Input catalog containing object identifiers.
-    - spectral_lookup (Dict[str, str]): Dictionary mapping object names to spectral types.
-    - name_column (str, default="calspec_name"): DataFrame column name containing the object identifiers.
+    ----------
+    df : pd.DataFrame
+        Input catalog DataFrame containing object identifiers.
+    spectral_lookup : dict[str, str]
+        Dictionary mapping object names to spectral types.
+    name_column : str, default="calspec_name"
+        DataFrame column name containing the object identifiers.
 
     Returns
-    - Tuple[pd.DataFrame, List[str]]
-        - Annotated copy of input DataFrame with added "spectral_type" 
+    -------
+    tuple[pd.DataFrame, list[str]]
+        A tuple containing:
+        - out : Annotated copy of input DataFrame with added "spectral_type" 
           and "color_category" columns.
-        - List of primary valid color categories: ["Solar", "Blue", "Red"].
+        - labels : List of primary valid color categories `["Solar", "Blue", "Red"]`.
     """
     out = df.copy()
 
@@ -180,27 +209,33 @@ def save_color_catalogs(
     Load a crossmatched catalog, partition it by color regime, and write CSV outputs.
 
     Parameters
-    - input_csv_path (str): Filepath to the primary crossmatched catalog CSV.
-    - calspec_table_path (str): Filepath to the CALSPEC reference catalog CSV.
-    - output_dir (str): Destination directory where sub-catalogs will be created.
-    - name_column (str, default="calspec_name"): Column name in `input_csv_path` used for target matching.
+    ----------
+    input_csv_path : str
+        Filepath to the primary crossmatched catalog CSV.
+    calspec_table_path : str
+        Filepath to the CALSPEC reference catalog CSV.
+    output_dir : str
+        Destination directory where sub-catalogs will be created.
+    name_column : str, default="calspec_name"
+        Column name in `input_csv_path` used for target matching.
 
     Raises
-    - FileNotFoundError: If `input_csv_path` or `calspec_table_path` cannot be located on disk.
+    ------
+    FileNotFoundError
+        If `input_csv_path` or `calspec_table_path` cannot be located on disk.
     """
-
     if not os.path.exists(input_csv_path):
-        raise FileNotFoundError(input_csv_path)
+        raise FileNotFoundError(f"Input catalog not found at: {input_csv_path}")
 
     if not os.path.exists(calspec_table_path):
-        raise FileNotFoundError(calspec_table_path)
+        raise FileNotFoundError(f"CALSPEC table not found at: {calspec_table_path}")
 
-    print(f"[>] Loading catalogs and reference tables...")
+    print("[>] Loading catalogs and reference tables...")
     df = pd.read_csv(input_csv_path)
     spectral_lookup = load_spectral_lookup(calspec_table_path)
 
     # Classify catalog entries
-    print(f"[>] Classifying targets into color regimes...")
+    print("[>] Classifying targets into color regimes...")
     df_classified, labels = group_catalog_by_color(
         df,
         spectral_lookup=spectral_lookup,
@@ -226,17 +261,17 @@ def save_color_catalogs(
         print(f"    • {label} Catalog: {len(sub_df)} targets -> {output_file}")
 
 
-if __name__ == "__main__": 
+if __name__ == "__main__":
     # Default pipeline paths
-    input_catalog_path = "data/processed/crossmatch_catalog.csv" 
+    input_catalog_path = "data/processed/catalogs_by_color/all_catalog.csv"
 
-    # CSV containing at least columns: Name, Sp. T. 
-    calspec_table_path = "data/raw/calspec_reference.csv" 
+    # CSV containing at least columns: Name, Sp. T.
+    calspec_table_path = "data/raw/calspec_reference.csv"
     output_directory = "data/processed/catalogs_by_color"
 
-    save_color_catalogs( 
-        input_csv_path=input_catalog_path, 
-        calspec_table_path=calspec_table_path, 
-        output_dir=output_directory, 
+    save_color_catalogs(
+        input_csv_path=input_catalog_path,
+        calspec_table_path=calspec_table_path,
+        output_dir=output_directory,
         name_column="calspec_name"
     )

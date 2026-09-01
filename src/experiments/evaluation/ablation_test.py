@@ -72,7 +72,7 @@ from src.utils.metrics.alternative_metrics import (
     calculate_band_errors,
     calculate_band_bias
 )
-from src.experiments.evaluation.cross_validation import load_stellar_parameters
+from src.experiments.evaluation.kfold_crossvalidation.cross_validation import load_stellar_parameters
 
 
 # =================================================================
