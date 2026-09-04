@@ -23,7 +23,7 @@ warnings.filterwarnings("ignore")
 
 # LSF Convolution Module ("c") Import Strategy
 try:
-    from c import c as lsf_convolve
+    from src.processing.gaia_xp_lsf_convolution import c as lsf_convolve
     print("[✓] Custom LSF convolution module 'c' successfully imported.")
 except ImportError:
     print("[!] Warning: Custom module 'c' not found in system path.")

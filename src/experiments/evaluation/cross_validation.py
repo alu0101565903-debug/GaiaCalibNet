@@ -40,8 +40,8 @@ from sklearn.model_selection import KFold
 from sklearn.decomposition import PCA
 
 from src.utils.extra.seed import set_seed
-from src.models.pinn_architectures import PCAParamsSpectralPINN
-from src.train.loss.losses import PCAParamsPhysicsInformedLoss 
+from src.models.pinn_architecture import PCAParamsSpectralPINN
+from src.train.loss.loss import PCAParamsPhysicsInformedLoss 
 from src.train.training_functions.fixed_params_training_strategies import train_2stage_fixed
 from src.utils.visualize_models_performance.export_utils import export_test_predictions
 from src.utils.visualize_models_performance.metrics_eval import evaluate_test_set_from_file

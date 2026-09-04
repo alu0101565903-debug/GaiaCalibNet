@@ -34,8 +34,8 @@ from sklearn.decomposition import PCA
 from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader, TensorDataset
 
-from src.models.pinn_architectures import get_pinn_model
-from src.train.loss.losses import (
+from src.models.pinn_architecture import get_pinn_model
+from src.train.loss.loss import (
     BiCubicPhysicsInformedLoss,
     GaussianPhysicsInformedLoss,
     PCAPhysicsInformedLoss,

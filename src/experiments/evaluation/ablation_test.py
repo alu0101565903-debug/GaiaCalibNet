@@ -48,13 +48,13 @@ from sklearn.model_selection import KFold
 from sklearn.decomposition import PCA
 import scipy.signal as signal
 
-from src.models.pinn_architectures import (
+from src.models.pinn_architecture import (
     PCAParamsSpectralPINN,
     PCASpectralPINN,
     UndegradedPCASpectralPINN,
     UndegradedChebyshevSpectralPINN
 )
-from src.train.loss.losses import (
+from src.train.loss.loss import (
     PCAParamsPhysicsInformedLoss, 
     PCAPhysicsInformedLoss,
     UndegradedPCAPhysicsInformedLoss,
