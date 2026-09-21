@@ -1,0 +1,57 @@
+digraph PINN_Architecture {
+	fontname=Helvetica nodesep=0.8 rankdir=TB ranksep=0.8 splines=ortho
+	X [label="Espectro Gaia XP (X)
+[336 - 1020 nm]" color="#38761D" fillcolor="#D9EAD3" fontname="Helvetica-Bold" shape=parallelogram style=filled]
+	P [label="Parámetros Estelares (P)
+(Color BP-RP, Mag G, RUWE)" color="#38761D" fillcolor="#D9EAD3" fontname="Helvetica-Bold" shape=parallelogram style=filled]
+	subgraph cluster_base {
+		color=gray fontcolor=gray label="Fase 1: Base PINN" style=dotted
+		Base_CNN [label="CNN 1D (Global)
+16 -> 32 canales + GELU
+Adaptive Pooling" color="#0B5394" fillcolor="#CFE2F3" fontname=Helvetica shape=box style="filled,rounded"]
+		Base_Fconv [label="Vector Características
+F_conv (4096D)" color="#0B5394" fillcolor="#CFE2F3" fontname=Helvetica shape=box style="filled,rounded"]
+		Base_Concat [label="Concatenación
+(4099D)" color="#0B5394" fillcolor="#CFE2F3" fontname=Helvetica shape=box style="filled,rounded"]
+		Base_MLP [label="Regresión MLP
+(128 -> 64 neuronas)" color="#0B5394" fillcolor="#CFE2F3" fontname=Helvetica shape=box style="filled,rounded"]
+		Base_PCA [label="Coeficientes PCA (c)
+[Inicialización cero]" color="#B45F06" fillcolor="#FFF2CC" fontname=Helvetica shape=box style="filled,dashed"]
+		Base_Recon [label="Reconstrucción Log-PCA
+R_base = exp(μ + c · B)" color="#B45F06" fillcolor="#FFF2CC" fontname=Helvetica shape=box style="filled,dashed"]
+	}
+	subgraph cluster_blue {
+		color=gray fontcolor=gray label="Fase 2: Blue WiggleNet" style=dotted
+		Filtro [label="Filtro Wavelength
+(λ < 450 nm)" color="#B45F06" fillcolor="#FFF2CC" fontname=Helvetica shape=box style="filled,dashed"]
+		Blue_CNN [label="CNN 1D (Local)
+Sin Pooling para preservar
+resolución espacial" color="#0B5394" fillcolor="#CFE2F3" fontname=Helvetica shape=box style="filled,rounded"]
+		Blue_Concat [label="Concatenación" color="#0B5394" fillcolor="#CFE2F3" fontname=Helvetica shape=box style="filled,rounded"]
+		Blue_MLP [label="MLP (128 neuronas)
+Activación Exponencial" color="#0B5394" fillcolor="#CFE2F3" fontname=Helvetica shape=box style="filled,rounded"]
+		Blue_Recon [label="Corrección Multiplicativa
+R_blue(λ)" color="#B45F06" fillcolor="#FFF2CC" fontname=Helvetica shape=box style="filled,dashed"]
+	}
+	Multiplicacion [label="Multiplicación Condicional
+R_final = R_base × R_blue (si λ < 450nm)
+R_final = R_base (si λ ≥ 450nm)" color="#B45F06" fillcolor="#FCE5CD" fontname="Helvetica-Bold" shape=ellipse style=filled]
+	Output [label="Calibración Absoluta
+Gaia DR3 (R_final)" color="#38761D" fillcolor="#D9EAD3" fontname="Helvetica-Bold" shape=parallelogram style=filled]
+	X -> Base_CNN
+	Base_CNN -> Base_Fconv
+	Base_Fconv -> Base_Concat
+	P -> Base_Concat [constraint=false]
+	Base_Concat -> Base_MLP
+	Base_MLP -> Base_PCA
+	Base_PCA -> Base_Recon
+	X -> Filtro
+	Filtro -> Blue_CNN
+	Blue_CNN -> Blue_Concat
+	P -> Blue_Concat [constraint=false]
+	Blue_Concat -> Blue_MLP
+	Blue_MLP -> Blue_Recon
+	Base_Recon -> Multiplicacion
+	Blue_Recon -> Multiplicacion
+	Multiplicacion -> Output
+}

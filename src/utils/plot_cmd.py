@@ -56,53 +56,32 @@ def plot_color_magnitude_diagram(input_csv: str, output_image: str):
 
     # 5. Plot the diagram
     # Make the figure slightly larger (12x9) to accommodate text boxes safely
-    plt.figure(figsize=(12, 9)) 
+    plt.figure(figsize=(9, 7)) 
     
-    # In astronomy, the Y-axis is always inverted (lower magnitudes = brighter)
+    scatter = plt.scatter(
+        df_clean["bp_rp"],
+        df_clean["abs_mag_g"],
+        c=df_clean["bp_rp"],
+        cmap="RdYlBu_r",
+        s=50,
+        edgecolors="black",
+        linewidths=0.5,
+        alpha=0.85,
+    )
+
+    # Invert Y-axis after plotting (brighter stars on top)
     plt.gca().invert_yaxis()
 
-    scatter = plt.scatter(df_clean["bp_rp"], df_clean["abs_mag_g"], 
-                          c=df_clean["bp_rp"], cmap="RdYlBu_r", 
-                          s=60, edgecolors="black", alpha=0.8)
-
-    # ==========================================
-    # 6. BENCHMARK STARS ANNOTATION
-    # ==========================================
-    # List is kept lower-case for uniformity during comparison
-    stars_to_label = ["wd0501+527", "gd71", "gd153", "hz43", "vb8"]
-    
-    for star in stars_to_label:
-        # Case-insensitive matching to avoid issues with catalog name conventions
-        match = df_clean[df_clean["calspec_name"].str.lower() == star]
-        
-        if not match.empty:
-            x_pos = match["bp_rp"].values[0]
-            y_pos = match["abs_mag_g"].values[0]
-            
-            # Change the technical name to the common name for G191-B2B, uppercase the rest
-            label_name = "G191-B2B" if star == "wd0501+527" else star.upper()
-            
-            # Add annotation with a pointing arrow
-            plt.annotate(label_name, 
-                         (x_pos, y_pos), 
-                         textcoords="offset points", 
-                         xytext=(15, 10), # Text offset (X, Y)
-                         ha="left", 
-                         fontsize=10,
-                         fontweight="bold",
-                         bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8),
-                         arrowprops=dict(arrowstyle="->", color="black", alpha=0.7, lw=1.5))
-
     # Visual configuration
-    plt.title("Color-Magnitude Diagram (CALSPEC x Gaia DR3)", fontsize=16, fontweight="bold")
-    plt.xlabel("Color BP - RP (Bluer -> Redder)", fontsize=12)
-    plt.ylabel("Absolute Magnitude M_G (Luminosity)", fontsize=12)
-    
-    plt.grid(True, linestyle="--", alpha=0.5)
-    cbar = plt.colorbar(scatter)
-    cbar.set_label("BP-RP Color Index")
+    plt.title("CALSPEC $\\times$ Gaia DR3 Color-Magnitude Diagram", fontsize=14, fontweight="bold")
+    plt.xlabel("$G_{\\mathrm{BP}} - G_{\\mathrm{RP}}$ [mag]", fontsize=12)
+    plt.ylabel("$M_G$ [mag]", fontsize=12)
 
-    # 7. Save and show the plot
+    plt.grid(True, linestyle="--", alpha=0.4)
+    cbar = plt.colorbar(scatter)
+    cbar.set_label("$G_{\\mathrm{BP}} - G_{\\mathrm{RP}}$", fontsize=11)
+
+    # 6. Save and show the plot
     os.makedirs(os.path.dirname(output_image), exist_ok=True)
     plt.savefig(output_image, dpi=300, bbox_inches="tight")
     
@@ -111,5 +90,5 @@ def plot_color_magnitude_diagram(input_csv: str, output_image: str):
 
 if __name__ == "__main__":
     input_file = "data/processed/crossmatch_catalog.csv"
-    output_image = "data/processed/cmd_calspec_crossmatch.png"
+    output_image = "data/processed/cmd_crossmatch.png"     # Change extension to .eps for vector graphics if needed
     plot_color_magnitude_diagram(input_file, output_image)

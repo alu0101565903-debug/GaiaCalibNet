@@ -11,9 +11,9 @@ aliased under the `"X_pinn"` array key within temporary `.npz` files to maintain
 metrics generation.
 """
 
+import warnings
 from pathlib import Path
 from typing import Union
-import warnings
 
 import numpy as np
 import pandas as pd
@@ -156,15 +156,25 @@ def run_huang_evaluation(
     # =====================================================================
     print("\n[>>] RUNNING EVALUATION: UNCALIBRATED GAIA DATA")
     # Pass num_knots=0 because uncalibrated raw data contains no model knot parameters
-    evaluate_test_set_from_file(str(npz_uncalib_path), str(out_dir_uncalib), num_knots=0, model_name="Uncalibrated Gaia")
+    evaluate_test_set_from_file(
+        str(npz_uncalib_path), 
+        str(out_dir_uncalib), 
+        num_knots=0, 
+        model_name="Uncalibrated Gaia"
+    )
 
     print("\n[>>] RUNNING EVALUATION: HUANG ET AL. BASELINE")
     # Pass num_knots=0 because Huang et al. is an empirical lookup correction
-    evaluate_test_set_from_file(str(npz_huang_path), str(out_dir_huang), num_knots=0, model_name="Huang et al. Baseline")
+    evaluate_test_set_from_file(
+        str(npz_huang_path), 
+        str(out_dir_huang), 
+        num_knots=0, 
+        model_name="Huang et al. Baseline"
+    )
     print("\n[✓] All baseline evaluations completed successfully!")
     print(f"[✓] Output directory (Uncalibrated): '{out_dir_uncalib}'")
     print(f"[✓] Output directory (Huang et al.): '{out_dir_huang}'")
 
 
 if __name__ == "__main__":
-    run_huang_evaluation(base_data_dir="data/processed/nn/all")
+    run_huang_evaluation(base_data_dir="data/processed/nn_data")

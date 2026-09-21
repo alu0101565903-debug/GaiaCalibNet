@@ -12,7 +12,7 @@ from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from src.processing.download_calspec import download_missing_fits
+from src.data_processing.download_calspec import download_missing_fits
 from src.utils.visualize_spectra.catalogs_management import extract_fits_data
 
 

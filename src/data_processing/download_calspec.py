@@ -8,25 +8,33 @@ with the Gaia DR3 framework. It utilizes multithreading for rapid retrieval
 and implements safety checks to prevent corrupt files.
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
 import pandas as pd
 import requests
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def download_single_file(fits_file: str, base_url: str, output_dir: Path) -> str:
-    """Download a single CALSPEC FITS file from the remote archive.
+    """
+    Download a single CALSPEC FITS file from the remote archive.
 
     This helper is designed to run in a separate thread. It checks whether the
     file already exists locally, then streams the remote file to disk with a
     timeout and a non-zero content guard.
 
-    Args:
-        fits_file (str): Name of the CALSPEC FITS file to retrieve.
-        base_url (str): Remote base URL for the CALSPEC archive.
-        output_dir (Path): Local directory where the file will be saved.
+    Parameters
+    ----------
+    fits_file : str
+        Name of the CALSPEC FITS file to retrieve.
+    base_url : str
+        Remote base URL for the CALSPEC archive.
+    output_dir : pathlib.Path
+        Local directory path where the file will be saved.
 
-    Returns:
-        str: One of 'exists', 'downloaded', or 'failed'.
+    Returns
+    -------
+    status : str
+        Status result string: 'exists', 'downloaded', or 'failed'.
     """
     local_path = output_dir / fits_file
 
@@ -56,16 +64,24 @@ def download_single_file(fits_file: str, base_url: str, output_dir: Path) -> str
             local_path.unlink()
         return "failed"
 
-def download_missing_fits(csv_path: str, output_dir_str: str):
-    """Read the crossmatch catalog and download any missing CALSPEC FITS files.
+def download_missing_fits(csv_path: str, output_dir_str: str) -> None:
+    """
+    Read the crossmatch catalog and download any missing CALSPEC FITS files.
 
     The function verifies that the crossmatch catalog exists, extracts the list
     of target FITS file names, and downloads missing files in parallel using a
     thread pool. Existing non-empty files are preserved.
 
-    Args:
-        csv_path (str): Path to the processed crossmatch catalog CSV.
-        output_dir_str (str): Directory where CALSPEC FITS files will be stored.
+    Parameters
+    ----------
+    csv_path : str
+        Path to the processed crossmatch catalog CSV.
+    output_dir_str : str
+        Directory where CALSPEC FITS files will be stored.
+
+    Returns
+    -------
+    None
     """
     print("=" * 60)
     print("[4.1] DOWNLOADING TARGET SPECTRAL FITS FILES FROM STScI")
@@ -129,7 +145,7 @@ def download_missing_fits(csv_path: str, output_dir_str: str):
     print("=" * 60 + "\n")
     
 if __name__ == "__main__":
-    crossmatch_csv = "data/processed/crossmatch_catalog.csv"
+    crossmatch_csv = "data/processed/training_catalog.csv"
     spectra_output_dir = "data/raw/calspec_fits"
     
     download_missing_fits(crossmatch_csv, spectra_output_dir)

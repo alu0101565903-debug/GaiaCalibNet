@@ -24,7 +24,7 @@ from src.utils.metrics.alternative_metrics import (
     calculate_band_bias
 )
 
-def evaluate_test_set_from_file(input_filepath: str, output_dir: str, num_knots: int = 20):
+def evaluate_test_set_from_file(input_filepath: str, output_dir: str, num_knots: int = 20, model_name: str = "PINN"):
     """
     Reads predictions from disk and evaluates the PINN model's performance using 
     astrophysical metrics. Exports a LaTeX code snippet and a PNG image of the results.
@@ -118,8 +118,8 @@ def evaluate_test_set_from_file(input_filepath: str, output_dir: str, num_knots:
     latex_table = f"""
 \\begin{{table}}[htpb]
 \\centering
-\\caption{{Quantitative Evaluation Results of the PINN Model (Blind Test: {num_stars} stars)}}
-\\label{{tab:pinn_evaluation}}
+\\caption{{Quantitative Evaluation Results of the {model_name} Model (Blind Test: {num_stars} stars)}}
+\\label{{tab:{model_name.lower()}_evaluation}}
 \\begin{{tabular}}{{lcll}}
 \\hline
 \\textbf{{Metric}} & \\textbf{{Value}} & \\textbf{{Objective}} & \\textbf{{Utility}} \\\\
@@ -198,7 +198,7 @@ Red Band Bias & {avg_red_bias:+.3f}\\% & 0.0\\% & Energy conservation in Gaia RP
         table.set_fontsize(9.5)
         table.scale(1.0, 2) 
 
-        plt.title(f"Quantitative Evaluation of the PINN Model (Blind Test: {num_stars} stars)", 
+        plt.title(f"Quantitative Evaluation of the {model_name} Model (Blind Test: {num_stars} stars)", 
                   fontsize=14, fontweight="bold", pad=20)
         
         png_path = os.path.join(output_dir, "evaluation_metrics.png")

@@ -159,9 +159,9 @@ def process_catalog_spectra(
 
 if __name__ == "__main__":
     process_catalog_spectra(
-        output_dir="data/processed/color_gaia_vs_calspec_spectra/solar_spectra_plots", 
+        output_dir="data/processed/color_gaia_vs_calspec_spectra", 
         mode="processed_crossmatch",
-        catalog_path="data//processed/catalogs_by_color/solar_catalog.csv",
-        x_path="data/processed/nn/solar/X.npy",
-        y_path="data/processed/nn/solar/Y.npy"
+        catalog_path="data/processed/crossmatch_catalog.csv",
+        x_path="data/processed/nn/X.npy",
+        y_path="data/processed/nn/Y.npy"
     )
