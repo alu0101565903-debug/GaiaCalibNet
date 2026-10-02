@@ -1,15 +1,16 @@
-"""
-Module: pinn_architecture.py
-Report Section: 4.5 Neural Network Architectures
+"""Define neural network architectures for spectral calibration.
 
-This module defines the 1D Convolutional Physics-Informed Neural Network architectures 
-used for absolute spectral calibration and residual artifact correction.
+The module contains one-dimensional convolutional PINNs for absolute spectral
+calibration and residual artifact correction.
 
-Architectures:
-    - DirectConvPINN: Predicts log-space PCA coefficients to reconstruct the continuous 
-      spectral calibration ratio R(lambda) mapping Gaia BP/RP to CALSPEC.
-    - BlueWiggleNet: Lightweight CNN predicting fine pixel-level multiplicative correction 
-      ratios to mitigate high-frequency blue-region spectral wiggles.
+Architectures
+-------------
+- ``DirectConvPINN`` predicts log-space PCA coefficients for the calibration ratio.
+- ``BlueWiggleNet`` predicts fine-scale multiplicative corrections in the blue region.
+
+Notes
+-----
+Report context: Section 4.5, Neural Network Architectures.
 """
 
 from typing import Optional
@@ -194,6 +195,7 @@ class BlueWiggleNet(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(total_features, hidden_dim),
             nn.GELU(),
+            nn.Dropout(p=0.2),
             nn.Linear(hidden_dim, input_dim)  # Predicts direct pixel-wise correction
         )
         

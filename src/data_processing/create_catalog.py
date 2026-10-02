@@ -1,16 +1,17 @@
-"""
-Module: create_catalog.py
-Report Section: 4.1 CALSPEC Data Acquisition & Catalog Generation
+"""Build a CALSPEC target catalog from the STScI archive.
 
-This script scrapes the remote STScI CALSPEC server index, organizes files by target,
-parses remote FITS headers stream-on-the-fly to extract target names and coordinates,
-and leverages a multi-candidate SIMBAD/Sesame fallback parser to resolve missing 
-coordinates, especially optimized for rescuing White Dwarfs (WD / WDFS).
+The script parses remote FITS headers to extract target names and coordinates,
+then resolves missing coordinates with SIMBAD/Sesame fallbacks.
 
-Features:
-    - Scrapes official STScI website using BeautifulSoup to extract 'V' magnitudes.
-    - Multi-threaded FITS header parsing using standard `concurrent.futures`.
-    - Handles sexagesimal and decimal coordinate representations robustly.
+Features
+--------
+- Extracts V magnitudes from the STScI index.
+- Parses FITS headers concurrently.
+- Handles sexagesimal and decimal coordinate representations.
+
+Notes
+-----
+Report context: Section 4.1, CALSPEC Data Acquisition and Catalog Generation.
 """
 
 import os
@@ -81,8 +82,8 @@ def clean_target_name(name: str, prefix: str) -> List[str]:
     """
     Clean raw target names and generate prioritized SIMBAD search candidates.
 
-    Standardizes target names to avoid blind zero-padding mismatches during 
-    SIMBAD resolution while mapping common astronomical aliases.
+    Standardizes target names to avoid blind zero-padding mismatches during
+    SIMBAD resolution while retaining the original CALSPEC identifier.
 
     Parameters
     ----------
@@ -98,20 +99,15 @@ def clean_target_name(name: str, prefix: str) -> List[str]:
 
     Notes
     -----
-    Special catalog aliases (e.g., P330E, P177D, SNAP2) are mapped explicitly to 
-    their standard astronomical catalog designations.
+    CALSPEC identifiers such as P330E, P177D, SNAP2, KF06T1, and C26202
+    are resolved by their own names, never substituted with other standards.
     """
-    base_name = name.upper() if name else prefix.upper()
-    candidates = []
+    base_name = (name or "").strip().upper() or prefix.strip().upper()
+    candidates = [base_name] if base_name else []
 
-    # Explicit lookup for known CALSPEC targets with uncommon catalog aliases
+    # CALSPEC standards must retain their own identities. A failed lookup is
+    # preferable to assigning coordinates from an unrelated standard star.
     calspec_aliases = {
-        "P330E": ["BD+28 4211"],
-        "P177D": ["BD+25 4655"],
-        "P041C": ["BD+20 5000"],
-        "SNAP2": ["HD 107513"],
-        "KF06T1": ["BD+28 4211"], 
-        "C26202": ["HD 188350"],
         "ETA1DOR": ["eta Dor"],
         "SUN": ["Sun"],
         "SUN_REFERENCE": ["Sun"]
@@ -446,12 +442,12 @@ def create_catalog(output_path: str) -> None:
             mag_dict = dict(zip(df_mags['key'], df_mags['V']))
 
             def match_v(row):
-                # 1. Match by calspec_name
+                # 1. Match by CALSPEC name.
                 k1 = re.sub(r'[^A-Z0-9]', '', str(row['calspec_name']).upper())
                 if k1 in mag_dict:
                     return mag_dict[k1]
 
-                # 2. Match by file prefix (e.g., 'bd_28d4211' from 'bd_28d4211_stis_001.fits')
+                # 2. Match by filename prefix, such as 'bd_28d4211' in 'bd_28d4211_stis_001.fits'.
                 fits_base = os.path.basename(str(row['fits_file']))
                 prefix_match = re.search(r"^(.+?)_(mod|stis|nic|stiswfcnic|stiswfc|faint|spec|fos|acs|wfc3|wfpc2|iue)", fits_base, re.IGNORECASE)
                 if prefix_match:

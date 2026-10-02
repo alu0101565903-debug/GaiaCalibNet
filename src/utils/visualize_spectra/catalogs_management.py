@@ -1,10 +1,4 @@
-"""
-Module: catalogs_management.py
-
-Description:
-    Core utility functions for catalog crossmatching, ID resolution, 
-    and standalone/modular plotting of Gaia and CALSPEC spectra.
-"""
+"""Resolve catalog entries and plot Gaia and CALSPEC spectra."""
 
 
 import numpy as np
@@ -18,38 +12,96 @@ import warnings
 from astropy.utils.exceptions import AstropyWarning
 
 
-# ============================
-# 1. INTERNAL HELPERS
-# ============================
+# Internal helpers.
 
 def get_clean_filename(name: str) -> str:
-    """Standardizes string formatting for safe file saving."""
+    """Convert a name to a filesystem-friendly filename component.
+
+    Parameters
+    ----------
+    name : str
+        Value to clean.
+
+    Returns
+    -------
+    str
+        Filename component with spaces and slashes replaced by underscores.
+    """
     return str(name).strip().replace("/", "_").replace(" ", "_")
 
 def get_wavelength_grid(num_channels: int) -> np.ndarray:
-    """Centralizes the wavelength definition."""
+    """Build the default wavelength grid.
+
+    Parameters
+    ----------
+    num_channels : int
+        Number of wavelength samples.
+
+    Returns
+    -------
+    numpy.ndarray
+        Linearly spaced wavelength grid from 330 to 1050 nm.
+    """
     return np.linspace(330, 1050, num_channels)
 
 @functools.lru_cache(maxsize=4)
 def _load_numpy_matrix(matrix_path: str | Path) -> np.ndarray:
-    """Internal cached helper to avoid re-reading binary matrix files in loops."""
+    """Load and cache a NumPy matrix.
+
+    Parameters
+    ----------
+    matrix_path : str or pathlib.Path
+        Path to the NumPy matrix file.
+
+    Returns
+    -------
+    numpy.ndarray
+        Loaded matrix.
+    """
     return np.load(Path(matrix_path))
 
 def _load_catalog(catalog_path: str | Path) -> pd.DataFrame:
-    """Internal helper to validate and load the CSV catalog."""
+    """Load a catalog after validating that its file exists.
+
+    Parameters
+    ----------
+    catalog_path : str or pathlib.Path
+        Path to the catalog CSV file.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Loaded catalog.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the catalog file does not exist.
+    """
     path = Path(catalog_path)
     if not path.exists():
         raise FileNotFoundError(f"Catalog file not found at: {path}")
     return pd.read_csv(path)
 
 def resolve_catalog_columns(df: pd.DataFrame):
-    """Returns the correct column names for ID and Name."""
+    """Resolve the source identifier and target name columns.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Catalog containing source identifiers and target names.
+
+    Returns
+    -------
+    tuple of str
+        Identifier column name followed by target name column name.
+    """
     name_col = "calspec_name" if "calspec_name" in df.columns else "Name"
     id_col = "source_id" if "source_id" in df.columns else "gaia_source_id"
     return id_col, name_col
 
-#def group_catalog_by_color(df: pd.DataFrame, color_column: str = "bp_rp"):
-    #"""Applies the standard BP-RP color bins to the catalog."""
+# def group_catalog_by_color(df: pd.DataFrame, color_column: str = "bp_rp"):
+    # """Apply the standard BP-RP color bins to the catalog."""
     #bins = [-np.inf, 0.5, 1.5, np.inf]
     #labels = ["Blue (BP-RP < 0.5)", "Solar (0.5 <= BP-RP < 1.5)", "Red (BP-RP >= 1.5)"]
     #df_result = df.copy()
@@ -57,7 +109,18 @@ def resolve_catalog_columns(df: pd.DataFrame):
     #return df_results, labels
 
 def extract_fits_data(fits_path: Path):
-    """Extracts and filters wavelength and flux from a FITS file."""
+    """Extract wavelength and flux arrays from a FITS file.
+
+    Parameters
+    ----------
+    fits_path : pathlib.Path
+        Path to the FITS file.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        Wavelength and flux arrays restricted to 3000-11000 Angstroms.
+    """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", AstropyWarning)
 
@@ -68,7 +131,7 @@ def extract_fits_data(fits_path: Path):
             wavelengths = data["WAVELENGTH"] if "WAVELENGTH" in cols else data[cols[0]]
             fluxes = data["FLUX"] if "FLUX" in cols else data[cols[1]]
             
-        # Mask data to target spectral window (3000.0 - 11000.0)
+        # Restrict the arrays to the target wavelength range.
         wave_min = max(3000.0, wavelengths.min())
         wave_max = min(11000.0, wavelengths.max())
         mask = (wavelengths >= wave_min) & (wavelengths <= wave_max)
@@ -88,7 +151,7 @@ def _plot_spectrum_base(
     linewidth: float = 1.8,
     alpha: float = 0.8,
 ):
-    """Internal engine to plot spectra from processed matrix files (.npy)."""
+    """Plot one spectrum loaded from a processed NumPy matrix."""
     star_idx, gaia_id, calspec_name = resolve_star_info(identifier, catalog_path=catalog_path)
 
     data = _load_numpy_matrix(str(matrix_path))
@@ -121,26 +184,62 @@ def _plot_spectrum_base(
 
         plt.close(fig)
 
-# =======================================
-# 2. ID EXTRACTION AND RESOLUTION
-# =======================================
+# Identifier extraction and resolution.
 
 def get_gaia_ids(catalog_path: str | Path = "data/processed/crossmatch_catalog.csv"):
-    """Extracts all Gaia Source IDs from the catalog."""
+    """Return Gaia source identifiers from a catalog.
+
+    Parameters
+    ----------
+    catalog_path : str or pathlib.Path, optional
+        Path to the catalog CSV file.
+
+    Returns
+    -------
+    list of str
+        Trimmed Gaia source identifiers.
+    """
     df = _load_catalog(catalog_path)
     id_col = "source_id" if "source_id" in df.columns else "gaia_source_id"
     return df[id_col].astype(str).str.strip().tolist()
 
 def get_calspec_names(catalog_path: str | Path = "data/processed/crossmatch_catalog.csv"):
-    """Extracts all CALSPEC names from the catalog."""
+    """Return CALSPEC target names from a catalog.
+
+    Parameters
+    ----------
+    catalog_path : str or pathlib.Path, optional
+        Path to the catalog CSV file.
+
+    Returns
+    -------
+    list of str
+        Trimmed CALSPEC target names.
+    """
     df = _load_catalog(catalog_path)
     name_col = "calspec_name" if "calspec_name" in df.columns else "Name"
     return df[name_col].astype(str).str.strip().tolist()
 
 def resolve_star_info(identifier, catalog_path: str | Path = "data/processed/crossmatch_catalog.csv"):
     """
-    Finds a star in the catalog using either its Gaia ID or CALSPEC name.
-    Returns: tuple (matrix_index, gaia_id, calspec_name)
+    Resolve a target by Gaia source identifier or CALSPEC name.
+
+    Parameters
+    ----------
+    identifier : str or int
+        Gaia source identifier or CALSPEC target name.
+    catalog_path : str or pathlib.Path, optional
+        Path to the catalog CSV file.
+
+    Returns
+    -------
+    tuple
+        Matrix index, Gaia source identifier, and CALSPEC target name.
+
+    Raises
+    ------
+    ValueError
+        If the target is not present in the catalog.
     """
     df = _load_catalog(catalog_path)
     id_col = "source_id" if "source_id" in df.columns else "gaia_source_id"
@@ -160,9 +259,7 @@ def resolve_star_info(identifier, catalog_path: str | Path = "data/processed/cro
 
     return star_idx, str(row[id_col]), str(row[name_col])
 
-# ===============================
-# 3. PUBLIC PLOTTING FUNCTIONS
-# ===============================
+# Public plotting functions.
 
 def plot_gaia_spectrum(
     identifier,
@@ -171,7 +268,7 @@ def plot_gaia_spectrum(
     output_dir: str | Path = None,
     ax=None,
 ):
-    """Plots the raw Gaia spectrum for a given Gaia ID or CALSPEC name."""
+    """Plot the Gaia spectrum for a catalog target."""
     _plot_spectrum_base(
         identifier=identifier,
         matrix_path=x_path,
@@ -191,7 +288,7 @@ def plot_calspec_spectrum(
     output_dir: str | Path = None,
     ax=None,
 ):
-    """Plots the CALSPEC target spectrum for a given Gaia ID or CALSPEC name."""
+    """Plot the CALSPEC reference spectrum for a catalog target."""
     _plot_spectrum_base(
         identifier=identifier,
         matrix_path=y_path,

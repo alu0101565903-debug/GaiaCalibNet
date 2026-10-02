@@ -1,9 +1,4 @@
-"""
-Module: plot_spectra_manager.py
-
-Unified execution manager for spectral plotting modes. Reuses shared catalog 
-helpers and plot engines to avoid code duplication.
-"""
+"""Coordinate spectral plotting workflows using shared catalog utilities."""
 
 import time
 from pathlib import Path
@@ -30,16 +25,27 @@ def process_catalog_spectra(
     y_path: str = "data/processed/Y.npy"
 ) -> None:
     """
-    Generates spectral plots according to the selected mode.
+    Generate spectral plots for the selected processing mode.
 
-    Args:
-    - output_dir (str | Path): Directory to save generated plot images.
-    - mode (str): Plotting mode. Options: 'processed_crossmatch', 
-         'processed_crossmatch_ratio', 'processed_gaia', 'raw_gaia', 'raw_calspec'.
-    - catalog_path (str): Path to CSV catalog file.
-    - fits_dir (str | Path): Directory containing raw CALSPEC FITS files.
-    - x_path (str): Path to input Gaia spectra array (.npy).
-    - y_path (str): Path to target CALSPEC spectra array (.npy).
+    Parameters
+    ----------
+    output_dir : str or pathlib.Path
+        Directory where generated plot images are saved.
+    mode : str, optional
+        Plotting mode: ``processed_crossmatch``, ``processed_crossmatch_ratio``,
+        ``processed_gaia``, ``raw_gaia``, or ``raw_calspec``.
+    catalog_path : str, optional
+        Path to the CSV catalog.
+    fits_dir : str or pathlib.Path, optional
+        Directory containing raw CALSPEC FITS files.
+    x_path : str, optional
+        Path to the input Gaia spectra array.
+    y_path : str, optional
+        Path to the target CALSPEC spectra array.
+
+    Returns
+    -------
+    None
     """
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -64,10 +70,10 @@ def process_catalog_spectra(
         clean_calspec = get_clean_filename(calspec_name)
 
         try:
-            # MODE 1: Processed Crossmatch
+            # Plot the processed Gaia-CALSPEC cross-match.
             if mode == "processed_crossmatch":
                 fig, ax = plt.subplots(figsize=(10, 5))
-                # We pass 'catalog_path' so the index matches the .npy subset
+                # Use catalog_path so the index matches the NumPy subset.
                 plot_gaia_spectrum(identifier=gaia_id, x_path=x_path, catalog_path=catalog_path, ax=ax)
                 plot_calspec_spectrum(identifier=gaia_id, y_path=y_path, catalog_path=catalog_path, ax=ax)
                 
@@ -81,7 +87,7 @@ def process_catalog_spectra(
                 plt.close(fig)
                 stats["rendered"] += 1
 
-            # MODE 2: Processed Crossmatch with Ratio
+            # Plot the processed cross-match and flux ratio.
             elif mode == "processed_crossmatch_ratio":
                 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True, gridspec_kw={"height_ratios": [2, 1]})
                 
@@ -120,12 +126,12 @@ def process_catalog_spectra(
                 plt.close(fig)
                 stats["rendered"] += 1
 
-            # MODE 3: Individual Processed Gaia
+            # Plot the processed Gaia spectrum.
             elif mode == "processed_gaia":
                 plot_gaia_spectrum(identifier=gaia_id, x_path=x_path, catalog_path=catalog_path, output_dir=out_path)
                 stats["rendered"] += 1
 
-            # MODE 4: ESA Gaia Archive Query
+            # Retrieve and plot a spectrum from the ESA Gaia Archive.
             elif mode == "raw_gaia":
                 if plot_raw_gaia_server_spectrum(gaia_id=gaia_id, output_dir=out_path):
                     stats["rendered"] += 1
@@ -133,7 +139,7 @@ def process_catalog_spectra(
                 else:
                     stats["failed"] += 1
 
-            # MODE 5: Raw CALSPEC FITS
+            # Plot the raw CALSPEC FITS spectrum.
             elif mode == "raw_calspec":
                 clean_name = str(calspec_name).strip()
                 matching_files = list(fits_path_dir.glob(f"*{clean_name}*.fits"))

@@ -9,18 +9,21 @@ warnings.filterwarnings("ignore")
 
 def plot_color_magnitude_diagram(input_csv: str, output_image: str):
     """
-    Generates a Color-Magnitude Diagram (CMD) from a crossmatched CSV file 
-    containing CALSPEC and Gaia DR3 data.
+    Generate a color-magnitude diagram from cross-matched CALSPEC and Gaia DR3 data.
     
     It filters out invalid parallaxes, calculates absolute magnitudes, 
     plots the data, and annotates specific benchmark white dwarfs.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     input_csv : str
         Path to the input CSV file containing the crossmatched data.
     output_image : str
         Path where the resulting plot image will be saved.
+
+    Returns
+    -------
+    None
     """
     print("=" * 60)
     print("[3/3] GENERATING COLOR-MAGNITUDE DIAGRAM WITH LABELS")
@@ -30,32 +33,28 @@ def plot_color_magnitude_diagram(input_csv: str, output_image: str):
         print(f"[!] Error: File {input_csv} does not exist.")
         return
 
-    # Read the CSV file, treating "--"" and empty strings as NaN
+    # Read the CSV file, treating "--" and empty strings as NaN.
     df = pd.read_csv(input_csv, na_values=["--", ""])
     
-    # 1. Numeric coercion: Force scientific columns to be numeric types.
-    # The "coerce" parameter turns invalid parsing into NaN automatically.
+    # 1. Convert scientific columns to numeric values; invalid values become NaN.
     df["parallax"] = pd.to_numeric(df["parallax"], errors="coerce")
     df["phot_g_mean_mag"] = pd.to_numeric(df["phot_g_mean_mag"], errors="coerce")
     df["bp_rp"] = pd.to_numeric(df["bp_rp"], errors="coerce")
     
-    # 2. Duplicate filter: Keep only the first occurrence if multiple 
-    # CALSPEC stars resolve to the same Gaia source ID (unresolved binaries).
+    # 2. Keep the first row when multiple CALSPEC stars resolve to one Gaia source.
     df_unique = df.drop_duplicates(subset=["gaia_source_id"], keep="first")
     
-    # 3. Quality filter: Drop rows with missing crucial data and 
-    # keep only stars with positive parallaxes.
+    # 3. Remove rows with missing required data or non-positive parallaxes.
     df_clean = df_unique.dropna(subset=["parallax", "phot_g_mean_mag", "bp_rp"])
     df_clean = df_clean[df_clean["parallax"] > 0].copy()
     
     print(f"-> Processing {len(df_clean)} unique stars with valid parallax...")
 
-    # 4. Calculate distance in parsecs and Absolute Magnitude (M_G)
+    # 4. Calculate distances in parsecs and absolute magnitudes.
     df_clean["distance_pc"] = 1000.0 / df_clean["parallax"]
     df_clean["abs_mag_g"] = df_clean["phot_g_mean_mag"] - 5 * np.log10(df_clean["distance_pc"]) + 5
 
-    # 5. Plot the diagram
-    # Make the figure slightly larger (12x9) to accommodate text boxes safely
+    # 5. Plot the diagram with room for annotation boxes.
     plt.figure(figsize=(9, 7)) 
     
     scatter = plt.scatter(
@@ -81,7 +80,7 @@ def plot_color_magnitude_diagram(input_csv: str, output_image: str):
     cbar = plt.colorbar(scatter)
     cbar.set_label("$G_{\\mathrm{BP}} - G_{\\mathrm{RP}}$", fontsize=11)
 
-    # 6. Save and show the plot
+    # 6. Save and display the plot.
     os.makedirs(os.path.dirname(output_image), exist_ok=True)
     plt.savefig(output_image, dpi=300, bbox_inches="tight")
     

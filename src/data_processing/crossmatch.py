@@ -1,17 +1,18 @@
-"""
-Module: crossmatch.py
-Report Section: 4.2 Gaia Data Retrieval & 4.3 Catalog Cross-matching
+"""Cross-match CALSPEC targets with Gaia DR3 sources.
 
-This module provides routines to cross-match a local CALSPEC stellar catalog with 
-Gaia DR3. It performs cone searches via TAP queries, filters candidate matches using 
-differential magnitudes (|G - V|), and accounts for proper motion by propagating 
-astrometric coordinates from Gaia epoch J2016.0 to CALSPEC epoch J2000.0.
+The module performs TAP cone searches, filters candidates by angular separation
+and differential magnitude, and propagates Gaia coordinates from J2016.0 to
+the CALSPEC epoch J2000.0.
 
-Features:
-    - Multi-server TAP fallback (ESA Main, ARI Heidelberg, AIP Potsdam, INAF).
-    - Strict angular distance filtering (default 1.5 - 5.0 arcsec).
-    - Differential magnitude validation between Gaia G and CALSPEC V.
-    - 3D space-motion propagation using Astropy SkyCoord and Time.
+Features
+--------
+- Falls back across multiple public Gaia TAP servers.
+- Filters candidates by angular separation and Gaia G versus CALSPEC V magnitude.
+- Propagates astrometric coordinates with Astropy.
+
+Notes
+-----
+Report context: Sections 4.2 and 4.3, Gaia Data Retrieval and Catalog Cross-Matching.
 """
 
 import os

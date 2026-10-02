@@ -1,10 +1,11 @@
-"""
-Module: spectral_degradation.py
-Report Section: 4.4 Spectral Resolution Degradation to Gaia XP DR3
+"""Degrade high-resolution reference spectra to the Gaia DR3 XP resolution.
 
-This module provides routines to degrade high-resolution reference spectra (e.g., CALSPEC)
-to match the instrument line spread function (LSF) and variable spectral resolution (R) 
-of Gaia DR3 externally calibrated XP spectra (Montegriffo et al. 2023).
+The module applies a wavelength-dependent line-spread function (LSF) based on
+the externally calibrated Gaia XP resolution curve (Montegriffo et al., 2023).
+
+Notes
+-----
+Report context: Section 4.4, Spectral Resolution Degradation to Gaia XP DR3.
 """
 
 import numpy as np
@@ -43,7 +44,7 @@ def degrade_to_gaia_xp(
     - Resolution table values R = lambda / FWHM are based on Montegriffo et al. (2023) 
       Gaia DR3 XP calibration data.
     - FWHM is converted to Gaussian standard deviation via:
-      sigma = FWHM / (2 * sqrt(2 * ln(2)))
+            sigma = FWHM / (2 * sqrt(2 * ln(2)))
     """
    # Table describing the resolution R = lambda / FWHM of Gaia DR3 XP spectra (Montegriffo et al. 2023)
    xt = np.array([350.,370.,390.,410,430.,450.,470.,490.,510.,530.,550.,570.,590.,610.,630.,640.,660.,680.,700.,720.,740.,760.,780.,800.,820.,840.,860.,880.,900.,920.,940.,960.,980.])

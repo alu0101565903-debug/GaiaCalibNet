@@ -1,13 +1,11 @@
-"""
-Module: pinn_trainer.py
-Report Section: 4.8 Cross-Validation & Model Training Strategy
+"""Train the PINN models for a single cross-validation fold.
 
-This module provides the core training routine for a single cross-validation fold, 
-executing a two-phase optimization procedure: primary base network training followed 
-by localized blue-region wiggle correction model optimization.
+The training routine optimizes the base network first, then fits the localized
+blue-region correction model.
 
-Functions:
-    - train_fold: Executes the sequential two-stage training loop for a single fold.
+Notes
+-----
+Report context: Section 4.8, Cross-Validation and Model Training Strategy.
 """
 
 from typing import Dict, Tuple, Union
@@ -15,6 +13,7 @@ from typing import Dict, Tuple, Union
 import numpy as np
 import torch
 import torch.nn as nn
+from tqdm.auto import tqdm
 
 
 def train_fold(
@@ -36,6 +35,8 @@ def train_fold(
     P_val: torch.Tensor = None,
     E_val: torch.Tensor = None,
     return_history: bool = False,
+    progress_position: int = 0,
+    progress_leave: bool = True,
 ) -> Union[Tuple[nn.Module, nn.Module], Tuple[nn.Module, nn.Module, Dict[str, np.ndarray]]]:
     """
     Execute a two-phase training sequence for a single cross-validation fold.
@@ -90,22 +91,35 @@ def train_fold(
         "blue_val": [],
     }
 
-    for _ in range(epochs_adam):
+    base_progress = tqdm(
+        range(epochs_adam),
+        desc="Phase 1/2 - Base PINN",
+        unit="epoch",
+        position=progress_position,
+        leave=progress_leave,
+    )
+    for _ in base_progress:
         optimizer_base.zero_grad()
         loss_base = criterion_base(model, X_train, Y_train, E_train, P_train)
         loss_base.backward()
         nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer_base.step()
-        scheduler.step()
 
         history["base_train"].append(loss_base.detach().item())
         if X_val is not None:
             model.eval()
             with torch.no_grad():
-                history["base_val"].append(
-                    criterion_base(model, X_val, Y_val, E_val, P_val).item()
-                )
+                base_val_loss = criterion_base(model, X_val, Y_val, E_val, P_val).item()
+                history["base_val"].append(base_val_loss)
             model.train()
+            base_progress.set_postfix(
+                loss=f"{loss_base.item():.3e}", val_loss=f"{base_val_loss:.3e}",
+                refresh=False,
+            )
+        else:
+            base_progress.set_postfix(loss=f"{loss_base.item():.3e}", refresh=False)
+
+        optimizer_base.step()
+        scheduler.step()
 
     # --- PREPARE INTERMEDIATE DATA FOR PHASE 2 ---
     model.eval()
@@ -120,12 +134,18 @@ def train_fold(
 
     # --- PHASE 2: Train Specialized Blue Correction Model ---
     blue_model.train()
-    for _ in range(epochs_blue):
+    blue_progress = tqdm(
+        range(epochs_blue),
+        desc="Phase 2/2 - BlueWiggleNet",
+        unit="epoch",
+        position=progress_position,
+        leave=progress_leave,
+    )
+    for _ in blue_progress:
         optimizer_blue.zero_grad()
         R_blue_fine = blue_model(X_train_blue, P_train)
         loss_blue = criterion_blue(R_blue_fine, Y_train_blue, Y_pred_base_blue, E_train_blue)
         loss_blue.backward()
-        optimizer_blue.step()
 
         history["blue_train"].append(loss_blue.detach().item())
         if X_val is not None:
@@ -138,10 +158,19 @@ def train_fold(
                 E_val_blue = E_val[:, blue_mask]
                 Y_val_base_blue = Y_val_base[:, blue_mask]
                 R_val_fine = blue_model(X_val_blue, P_val)
-                history["blue_val"].append(
-                    criterion_blue(R_val_fine, Y_val_blue, Y_val_base_blue, E_val_blue).item()
-                )
+                blue_val_loss = criterion_blue(
+                    R_val_fine, Y_val_blue, Y_val_base_blue, E_val_blue
+                ).item()
+                history["blue_val"].append(blue_val_loss)
             blue_model.train()
+            blue_progress.set_postfix(
+                loss=f"{loss_blue.item():.3e}", val_loss=f"{blue_val_loss:.3e}",
+                refresh=False,
+            )
+        else:
+            blue_progress.set_postfix(loss=f"{loss_blue.item():.3e}", refresh=False)
+
+        optimizer_blue.step()
 
     if return_history:
         return model, blue_model, {key: np.asarray(value, dtype=np.float64) for key, value in history.items()}

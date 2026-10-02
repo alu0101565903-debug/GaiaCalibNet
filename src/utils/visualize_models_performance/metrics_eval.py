@@ -1,14 +1,7 @@
-"""
-Module: metrics_eval.py
+"""Evaluate exported spectral predictions with astrophysical metrics.
 
-Quantitative evaluation module for the PINN spectral recalibration pipeline.
-
-This module provides tools to load exported model predictions and evaluate the 
-model's performance using standard astrophysical metrics. It computes Peak-Normalized 
-Mean Absolute Error (MAE), Reduced Chi-Square, Normalized Bias (MBE), Cosine Similarity, 
-and relative errors grouped by specific wavelength bands. The results are aggregated 
-and automatically exported as both a LaTeX table and a PNG image for direct inclusion 
-in academic reports.
+The module computes per-target accuracy, uncertainty, bias, and similarity
+metrics, then exports aggregate results as a LaTeX table and PNG image.
 """
 
 import os
@@ -26,35 +19,37 @@ from src.utils.metrics.alternative_metrics import (
 
 def evaluate_test_set_from_file(input_filepath: str, output_dir: str, num_knots: int = 20, model_name: str = "PINN"):
     """
-    Reads predictions from disk and evaluates the PINN model's performance using 
-    astrophysical metrics. Exports a LaTeX code snippet and a PNG image of the results.
+    Evaluate exported predictions with astrophysical metrics.
 
-    This function iterates through all stellar samples stored in the input `.npz` archive,
-    calculates multiple quantitative metrics (Peak-Normalized MAE, Reduced Chi-Square, 
-    Normalized Bias, Cosine Similarity, and Band-specific Errors) for each sample, 
-    and computes the global averages. The final aggregated metrics are formatted 
-    into a professional LaTeX table and rendered as a high-resolution PNG image.
+    Calculate metrics for each stellar sample, then export their means as a
+    LaTeX table and PNG image.
 
-    Args:
-    - input_filepath (str): The full path to the `.npz` file containing the 
-        exported inference data (original spectra, references, predictions, and errors).
-    - output_dir (str): The destination directory where the generated `.tex` 
-        and `.png` files will be saved. The directory is created if it does not exist.
-    - num_knots (int, optional): The number of free parameters (or control knots) 
-        used by the model, required to properly calculate the degrees of freedom 
-        for the Reduced Chi-Square metric. Defaults to 20.
+    Parameters
+    ----------
+    input_filepath : str
+        Path to the ``.npz`` archive containing spectra, references, predictions,
+        and uncertainties.
+    output_dir : str
+        Destination directory for the generated ``.tex`` and ``.png`` files.
+    num_knots : int, optional
+        Number of model parameters used to calculate reduced chi-square degrees
+        of freedom. The default is 20.
+    model_name : str, optional
+        Model label used in the generated table. The default is ``"PINN"``.
 
-    Returns:
-    - None: This function does not return any Python objects. It writes the evaluation 
-        results directly to the standard output and the filesystem.
+    Returns
+    -------
+    None
 
-    Raises:
-    - FileNotFoundError: If the `.npz` file specified by `input_filepath` does not exist.
+    Raises
+    ------
+    FileNotFoundError
+        If ``input_filepath`` does not exist.
     """
     if not os.path.exists(input_filepath):
         raise FileNotFoundError(f"File not found: {input_filepath}")
         
-    # 1. Load data from disk
+    # Load the exported arrays.
     data = np.load(input_filepath)
     wave = data["wave"]
     y_true = data["Y_ref"]
@@ -68,12 +63,12 @@ def evaluate_test_set_from_file(input_filepath: str, output_dir: str, num_knots:
 
     num_stars = y_true.shape[0]
     
-    # 2. Initialize accumulators
+    # Initialize metric accumulators.
     pn_mae_list, std_list, chi_sq_list, bias_list, cos_sim_list = [], [], [], [], []
-    band_mae_accum = {"blue": 0.0, "green": 0.0, "red": 0.0}
-    band_bias_accum = {"blue": 0.0, "green": 0.0, "red": 0.0}
+    band_mae_values = {"blue": [], "green": [], "red": []}
+    band_bias_values = {"blue": [], "green": [], "red": []}
     
-    # 3. Calculate metrics star by star
+    # Calculate metrics for each star.
     for i in range(num_stars):
         pn_mae_list.append(calculate_peak_normalized_mae(y_true[i], y_pred[i]))
         std_list.append(calculate_normalized_std_percentage(y_true[i], y_pred[i]))
@@ -81,48 +76,42 @@ def evaluate_test_set_from_file(input_filepath: str, output_dir: str, num_knots:
         bias_list.append(calculate_normalized_bias_percentage(y_true[i], y_pred[i]))
         cos_sim_list.append(calculate_cosine_similarity(y_true[i], y_pred[i]))
         
-        # Band MAE
+        # Calculate band-specific errors.
         b_mae = calculate_band_errors(wave, y_true[i], y_pred[i])
-        band_mae_accum["blue"] += b_mae["blue_rel_error_percent"]
-        band_mae_accum["green"] += b_mae["green_rel_error_percent"]
-        band_mae_accum["red"] += b_mae["red_rel_error_percent"]
+        band_mae_values["blue"].append(b_mae["blue_rel_error_percent"])
+        band_mae_values["green"].append(b_mae["green_rel_error_percent"])
+        band_mae_values["red"].append(b_mae["red_rel_error_percent"])
 
-        # Band Bias
+        # Calculate band-specific bias.
         b_bias = calculate_band_bias(wave, y_true[i], y_pred[i])
-        band_bias_accum["blue"] += b_bias["blue_bias_norm_percent"]
-        band_bias_accum["green"] += b_bias["green_bias_norm_percent"]
-        band_bias_accum["red"] += b_bias["red_bias_norm_percent"]
-
-        # Band Bias (Bias_norm %)
-        b_bias = calculate_band_bias(wave, y_true[i], y_pred[i])
-        band_bias_accum["blue"] += b_bias["blue_bias_norm_percent"]
-        band_bias_accum["green"] += b_bias["green_bias_norm_percent"]
-        band_bias_accum["red"] += b_bias["red_bias_norm_percent"]
+        band_bias_values["blue"].append(b_bias["blue_bias_norm_percent"])
+        band_bias_values["green"].append(b_bias["green_bias_norm_percent"])
+        band_bias_values["red"].append(b_bias["red_bias_norm_percent"])
         
-    # 4. Final Averages
+    # Average each metric across stars.
     avg_pn_mae = np.mean(pn_mae_list)
     avg_std = np.mean(std_list)
     avg_chi_sq = np.mean(chi_sq_list)
     avg_bias = np.mean(bias_list)
     avg_cos_sim = np.mean(cos_sim_list)
 
-    avg_blue_mae = band_mae_accum["blue"] / num_stars
-    avg_green_mae = band_mae_accum["green"] / num_stars
-    avg_red_mae = band_mae_accum["red"] / num_stars
+    avg_blue_mae = np.mean(band_mae_values["blue"])
+    avg_green_mae = np.mean(band_mae_values["green"])
+    avg_red_mae = np.mean(band_mae_values["red"])
 
-    avg_blue_bias = band_bias_accum["blue"] / num_stars
-    avg_green_bias = band_bias_accum["green"] / num_stars
-    avg_red_bias = band_bias_accum["red"] / num_stars
+    avg_blue_bias = np.mean(band_bias_values["blue"])
+    avg_green_bias = np.mean(band_bias_values["green"])
+    avg_red_bias = np.mean(band_bias_values["red"])
 
-    # --- 5. LaTeX Code Generation ---
+    # Generate the LaTeX table.
     latex_table = f"""
 \\begin{{table}}[htpb]
 \\centering
-\\caption{{Quantitative Evaluation Results of the {model_name} Model (Blind Test: {num_stars} stars)}}
+\\caption{{Quantitative Evaluation Results of the {model_name} Model (Evaluation sample: {num_stars} stars)}}
 \\label{{tab:{model_name.lower()}_evaluation}}
 \\begin{{tabular}}{{lcll}}
 \\hline
-\\textbf{{Metric}} & \\textbf{{Value}} & \\textbf{{Objective}} & \\textbf{{Utility}} \\\\
+\\textbf{{Metric}} & \\textbf{{Mean}} & \\textbf{{Objective}} & \\textbf{{Utility}} \\\\
 \\hline
 Peak-Normalized MAE & {avg_pn_mae:.3f}\\% & 0.0\\% & Global precision independent of magnitude \\\\
 Normalized Std. Dev. (NSTD) & {avg_std:.3f}\\% & 0.0\\% & Statistical dispersion of flux residuals \\\\
@@ -154,13 +143,13 @@ Red Band Bias & {avg_red_bias:+.3f}\\% & 0.0\\% & Energy conservation in Gaia RP
     if output_dir is not None:
         os.makedirs(output_dir, exist_ok=True)
         
-        # Save LaTeX string to file
+        # Save the LaTeX table.
         latex_path = os.path.join(output_dir, "evaluation_metrics.tex")
         with open(latex_path, "w", encoding="utf-8") as f:
             f.write(latex_table)
         print(f"[✓] LaTeX file saved to: {latex_path}")
 
-        # --- 6. PNG Image Generation with Matplotlib ---
+        # Render the metrics table as a PNG image.
         fig, ax = plt.subplots(figsize=(14, 8))
         ax.axis("tight")
         ax.axis("off")
@@ -179,7 +168,7 @@ Red Band Bias & {avg_red_bias:+.3f}\\% & 0.0\\% & Energy conservation in Gaia RP
             ["Red Band Bias (> 700 nm)", f"{avg_red_bias:+.3f}%", "0.0%", "Photometric energy conservation in Gaia RP"]
         ]
 
-        columns = ["Metric", "Value", "Objective", "Utility"]
+        columns = ["Metric", "Mean", "Objective", "Utility"]
         col_widths = [0.22, 0.10, 0.10, 0.56]
         
         table = ax.table(
@@ -196,9 +185,9 @@ Red Band Bias & {avg_red_bias:+.3f}\\% & 0.0\\% & Energy conservation in Gaia RP
 
         table.auto_set_font_size(False)
         table.set_fontsize(9.5)
-        table.scale(1.0, 2) 
+        table.scale(1.0, 2)
 
-        plt.title(f"Quantitative Evaluation of the {model_name} Model (Blind Test: {num_stars} stars)", 
+        plt.title(f"Quantitative Evaluation of the {model_name} Model (Evaluation sample: {num_stars} stars)",
                   fontsize=14, fontweight="bold", pad=20)
         
         png_path = os.path.join(output_dir, "evaluation_metrics.png")

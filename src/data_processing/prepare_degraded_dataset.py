@@ -1,18 +1,14 @@
-"""
-Module: prepare_degraded_dataset.py
-Report Section: 4.4 Data Degradation & Dataset Preparation
+"""Prepare degraded Gaia XP and CALSPEC spectra for model training.
 
-This module constructs degraded spectral datasets for neural network training 
-and evaluation. It degrades high-resolution CALSPEC standard star spectra to match 
-Gaia BP/RP low-resolution spectra by convolving them with an empirical 
-wavelength-dependent Gaia Line Spread Function (LSF) model (Montegriffo et al. 2023).
+High-resolution CALSPEC spectra are convolved with an empirical,
+wavelength-dependent Gaia BP/RP line-spread function (LSF) and aligned with
+Gaia spectra on a shared wavelength grid.
 
-Features:
-    - Empirical Gaia BP/RP LSF convolution using Montegriffo et al. (2023) resolution curves.
-    - Standardized CALSPEC unit conversions (Å -> nm, erg/s/cm²/Å -> W/m²/nm).
-    - Wavelength grid alignment using cubic spline interpolation.
-    - Robust batch queries via GaiaXPy with automated retry logic.
-    - Generation of normalized feature tensors (X_norm, Y_ratio, Errors_norm) for network training.
+Features
+--------
+- Converts CALSPEC wavelengths and fluxes to the pipeline units.
+- Retrieves Gaia XP spectra in batches with retry handling.
+- Produces absolute and normalized arrays for model training and evaluation.
 """
 
 import os
@@ -28,11 +24,13 @@ from numpy.typing import NDArray
 from scipy.integrate import simpson
 from scipy.interpolate import interp1d
 
+from src.utils.processing.pinn_data import compute_calibration_ratio, stable_flux_denominator
+
 # Suppress runtime warnings for cleaner terminal output
 warnings.filterwarnings("ignore")
 
 try:
-    from src.data_processing.gaia_xp_lsf_convolution import degrade_to_gaia_xp as c_module_correct_lsf
+    from src.data_processing.gaia_xp_lsf_convolution import _degrade_to_gaia_xp as c_module_correct_lsf
 
     print("[✓] Custom LSF convolution module successfully imported.")
 except ImportError:
@@ -59,7 +57,7 @@ except ImportError:
         y_degraded : numpy.ndarray
             Degraded flux array evaluated on the `x_eval` grid.
         """
-        # 1. Anchor points for Gaia BP/RP spectral resolution R(lambda) (Montegriffo et al. 2023)
+        # Gaia BP/RP spectral-resolution anchors from Montegriffo et al. (2023).
         montegriffo_waves = np.array(
             [
                 330, 350, 400, 450, 500, 550, 600, 630,        # Blue Photometer (BP)
@@ -79,23 +77,23 @@ except ImportError:
         get_R = interp1d(montegriffo_waves, montegriffo_R, kind="linear", fill_value="extrapolate")
         y_degraded = np.zeros_like(x_eval, dtype=np.float64)
 
-        # 2. Point-by-point convolution with wavelength-dependent Gaussian kernel
+        # Convolve each wavelength with a wavelength-dependent Gaussian kernel.
         R_calspec = 800.0  # Intrinsic resolution of CALSPEC spectra
 
         for i, w_eval in enumerate(x_eval):
             R_w = get_R(w_eval)
 
-            # Quadrature subtraction to isolate instrumental blurring kernel
+            # Subtract resolutions in quadrature to isolate instrumental broadening.
             sigma_gaia = w_eval / (2.355 * R_w)
             sigma_initial = w_eval / (2.355 * R_calspec)
 
-            # Protect against cases where empirical resolution exceeds CALSPEC intrinsic resolution
+            # Guard against empirical resolution exceeding the CALSPEC resolution.
             sigma_kernel_sq = sigma_gaia**2 - sigma_initial**2
             sigma_w = np.sqrt(sigma_kernel_sq) if sigma_kernel_sq > 0 else 1e-5
 
             kernel = np.exp(-0.5 * ((x - w_eval) / sigma_w) ** 2)
 
-            # Kernel normalization
+            # Normalize the convolution kernel.
             kernel_area = simpson(y=kernel, x=x)
             if kernel_area > 0:
                 kernel = kernel / kernel_area
@@ -128,7 +126,7 @@ def process_calspec_target(fits_path: str, wave_grid_nm: NDArray[np.float64]) ->
         If key spectral data tables are missing, data coverage is insufficient, 
         or output contains unexpected NaN values.
     """
-    # 1. FITS Data Extraction
+    # Extract spectral data from the FITS file.
     with fits.open(fits_path) as hdul:
         data = None
         for ext in hdul:
@@ -142,11 +140,11 @@ def process_calspec_target(fits_path: str, wave_grid_nm: NDArray[np.float64]) ->
         raw_wave = np.array(data["WAVELENGTH"], dtype=np.float64)
         raw_flux = np.array(data["FLUX"], dtype=np.float64)
 
-    # 2. CALSPEC Unit Conversion (Å -> nm & erg/s/cm^2/Å -> W/m^2/nm)
+    # Convert CALSPEC wavelengths and fluxes to nm and W/m^2/nm.
     wave_nm = raw_wave / 10.0
     flux_wm2nm = raw_flux * 1e-2
 
-    # 3. Dense Extrapolation to 1200 nm (Linear Smooth Extrapolation)
+    # Extrapolate linearly to 1200 nm on a dense grid.
     if wave_nm[-1] < 1200.0:
         step = np.median(np.diff(wave_nm))
         ext_wave = np.arange(wave_nm[-1] + step, 1200.0 + step, step)
@@ -164,7 +162,7 @@ def process_calspec_target(fits_path: str, wave_grid_nm: NDArray[np.float64]) ->
         wave_nm = np.concatenate([wave_nm, ext_wave])
         flux_wm2nm = np.concatenate([flux_wm2nm, ext_flux])
 
-    # 4. Filter spectral region for safe convolution & cubic interpolation bounds
+    # Restrict the spectrum to the convolution and interpolation range.
     mask = (wave_nm >= wave_grid_nm.min() - 15.0) & (wave_nm <= 1200.0)
     xr_nm = wave_nm[mask]
     yr_flux = flux_wm2nm[mask]
@@ -172,10 +170,10 @@ def process_calspec_target(fits_path: str, wave_grid_nm: NDArray[np.float64]) ->
     if len(xr_nm) < 10:
         raise ValueError(f"Insufficient data within range [{wave_grid_nm.min()}, {wave_grid_nm.max()}] nm")
 
-    # 5. Gaia LSF Convolution
+    # Apply the Gaia LSF convolution.
     res_flux = c_module_correct_lsf(xr_nm, yr_flux, xr_nm)
 
-    # 6. Cubic Spline Interpolation directly onto target wavelength grid
+    # Interpolate directly onto the target wavelength grid.
     interp_func = interp1d(
         xr_nm, 
         res_flux, 
@@ -267,7 +265,7 @@ def calculate_c2_c3(flux: NDArray[np.float64], wave: NDArray[np.float64]) -> Tup
 def create_dataset(
     csv_path: str = "data/processed/training_catalog.csv",
     calspec_dir: str = "data/raw/calspec_fits",
-    output_dir: str = "data/processed/nn_data_c",
+    output_dir: str = "data/processed/nn_data",
     wave_step_nm: float = 2.0,
     wave_min_nm: float = 336.0,
     wave_max_nm: float = 1020.0,
@@ -317,7 +315,10 @@ def create_dataset(
         if pd.notna(raw_id) and str(raw_id).strip().lower() != "nan":
             id_str = str(raw_id).strip()
             if "e" in id_str.lower():
-                raise ValueError(f"Pérdida de precisión detectada en el CSV: {id_str}. Usa formato texto puro en la columna gaia_source_id.")
+                raise ValueError(
+                    f"Precision loss detected in the CSV value {id_str}. "
+                    "Store gaia_source_id as plain text."
+                )
             
             clean_id = int(id_str.split(".")[0])
             valid_gaia_ids.append(clean_id)
@@ -387,10 +388,9 @@ def create_dataset(
             for f_lower, real_name in real_fits_names.items():
                 prefix = star_name.lower()
                 if f_lower.startswith(prefix) and f_lower.endswith((".fits", ".fit")):
-                    # Extraemos lo que sigue después del nombre de la estrella
+                    # Extract the suffix following the star name.
                     remainder = f_lower[len(prefix):]
-                    # Solo aceptamos coincidencia si es exactamente el archivo (.fits) 
-                    # o si el nombre está separado por un guion bajo (ej. hd1_stis.fits)
+                    # Accept an exact FITS extension or a suffix separated by an underscore.
                     if remainder == ".fits" or remainder == ".fit" or remainder.startswith("_"):
                         matched_filename = real_name
                         break
@@ -413,7 +413,7 @@ def create_dataset(
             # Process ground truth spectrum Y (CALSPEC) via LSF convolution & interpolation
             y_target = process_calspec_target(fits_full_path, wave_length_grid)
 
-            # --- FLUX SCALE VALIDATION ---
+            # Validate the flux scale.
             median_x = np.nanmedian(x_input)
             median_y = np.nanmedian(y_target)
 
@@ -431,7 +431,8 @@ def create_dataset(
             X_error_list.append(x_error)
             G_mags_list.append(safe_float(row.get("phot_g_mean_mag"), 15.0))
             bp_rp_list.append(safe_float(row.get("bp_rp"), 0.75))
-            ruwe_list.append(safe_float(row.get("ruwe"), 1.0))
+            ruwe_value = safe_float(row.get("ruwe"), np.nan)
+            ruwe_list.append(ruwe_value if np.isfinite(ruwe_value) and ruwe_value > 0 else np.nan)
             c2_list.append(c2_val)
             c3_list.append(c3_val)
             processed_stars.append(star_name)
@@ -447,43 +448,40 @@ def create_dataset(
         print("\n[!] Critical Error: Zero stars were successfully processed.")
         return
 
-    # Convert python lists to NumPy arrays
+    # Convert Python lists to NumPy arrays.
     X_np = np.array(X_list, dtype=np.float32)
     Y_np = np.array(Y_list, dtype=np.float32)
     X_err_np = np.array(X_error_list, dtype=np.float32)
 
-    # --- DATA TRANSFORMATIONS FOR NEURAL NETWORK TRAINING ---
-    # 1. Normalized inputs (X_norm): Scale each spectrum by its maximum flux
+    # Prepare normalized arrays for neural network training.
+    # Scale each input spectrum by its maximum flux.
     scales = np.max(X_np, axis=1, keepdims=True) + 1e-30
     X_norm_np = X_np / scales
 
-    # 2. Target correction ratio (Y_ratio): Spectral response curve R to be predicted
-    Y_ratio_np = Y_np / np.clip(X_np, 1e-30, None)
+    # Compute the target spectral correction ratio.
+    Y_ratio_np = compute_calibration_ratio(X_np, Y_np)
     
-    # Se elimina el clip rígido [0.3, 3.0]. Se aplica un límite extremo solo 
-    # para prevenir explosiones numéricas (Infs) que colapsen el optimizador.
-    Y_ratio_np = np.clip(Y_ratio_np, 0.0, 10.0)
-    
-    # 3. Normalized fractional errors (Errors_norm): Fractional error propagation for heteroscedastic loss
-    # Fractional uncertainty propagation: sigma_R / R ≈ sigma_X / X
-    Errors_norm_np = X_err_np / np.clip(X_np, 1e-30, None)
+    # Propagate fractional uncertainties for the heteroscedastic loss.
+    Errors_norm_np = X_err_np / stable_flux_denominator(X_np)
 
     os.makedirs(abs_output_dir, exist_ok=True)
     
-    # Save absolute datasets for metric evaluations
+    # Save absolute arrays for metric evaluation.
     np.save(os.path.join(abs_output_dir, "X.npy"), X_np)
     np.save(os.path.join(abs_output_dir, "Y.npy"), Y_np)
     np.save(os.path.join(abs_output_dir, "X_error.npy"), X_err_np)
 
-    # Save normalized tensors formatted for neural network training
+    # Save normalized arrays for neural network training.
     np.save(os.path.join(abs_output_dir, "X_norm.npy"), X_norm_np)
     np.save(os.path.join(abs_output_dir, "Y_ratio.npy"), Y_ratio_np)
     np.save(os.path.join(abs_output_dir, "Errors_norm.npy"), Errors_norm_np)
 
-    # Save stellar parameters and metadata arrays
+    # Save stellar parameters and metadata arrays.
     np.save(os.path.join(abs_output_dir, "G_mags.npy"), np.array(G_mags_list, dtype=np.float32))
     np.save(os.path.join(abs_output_dir, "bp_rp.npy"), np.array(bp_rp_list, dtype=np.float32))
-    np.save(os.path.join(abs_output_dir, "ruwe.npy"), np.array(ruwe_list, dtype=np.float32))
+    ruwe_np = np.array(ruwe_list, dtype=np.float32)
+    np.save(os.path.join(abs_output_dir, "ruwe.npy"), ruwe_np)
+    np.save(os.path.join(abs_output_dir, "ruwe_missing.npy"), np.isnan(ruwe_np))
     np.save(os.path.join(abs_output_dir, "c2.npy"), np.array(c2_list, dtype=np.float32))
     np.save(os.path.join(abs_output_dir, "c3.npy"), np.array(c3_list, dtype=np.float32))
     np.save(os.path.join(abs_output_dir, "star_names.npy"), np.array(processed_stars))

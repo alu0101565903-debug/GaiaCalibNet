@@ -1,14 +1,7 @@
-"""
-Module: export_utils.py
+"""Export model predictions and baselines for evaluation and visualization.
 
-Utility functions for exporting model predictions and classical baselines 
-for further analysis and visualization.
-
-This module provides tools to take a trained PyTorch model, perform inference 
-on a given dataset, compute a baseline for comparison, and package all inputs, 
-predictions, and references into a single compressed NumPy archive (.npz). 
-This decoupling allows the evaluation and plotting scripts to run independently 
-of the PyTorch training environment.
+The module packages inputs, predictions, references, and metadata in compressed
+NumPy archives so evaluation tools can run independently of model training.
 """
 
 import os
@@ -16,6 +9,70 @@ from typing import Dict, Optional
 
 import numpy as np
 import torch
+
+
+def save_prediction_archive(
+    output_filepath: str,
+    wave: np.ndarray,
+    X_orig: np.ndarray,
+    Y_ref: np.ndarray,
+    X_pinn: np.ndarray,
+    X_err: Optional[np.ndarray] = None,
+    params: Optional[np.ndarray] = None,
+    G_mags: Optional[np.ndarray] = None,
+    X_huang: Optional[np.ndarray] = None,
+    R_pred: Optional[np.ndarray] = None,
+) -> None:
+    """Save predictions and metadata in the shared compressed archive format.
+
+    Parameters
+    ----------
+    output_filepath : str
+        Destination path for the compressed NumPy archive.
+    wave : numpy.ndarray
+        Wavelength grid in nanometers.
+    X_orig : numpy.ndarray
+        Original Gaia spectra.
+    Y_ref : numpy.ndarray
+        Reference spectra.
+    X_pinn : numpy.ndarray
+        PINN-calibrated spectra.
+    X_err : numpy.ndarray, optional
+        Input flux uncertainties.
+    params : numpy.ndarray, optional
+        Stellar feature values.
+    G_mags : numpy.ndarray, optional
+        Gaia G-band magnitudes.
+    X_huang : numpy.ndarray, optional
+        Baseline spectra from Huang et al. (2024).
+    R_pred : numpy.ndarray, optional
+        Predicted calibration ratios.
+
+    Returns
+    -------
+    None
+    """
+    output_dir = os.path.dirname(output_filepath)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    num_samples = X_orig.shape[0]
+    save_dict: Dict[str, np.ndarray] = {
+        "wave": wave,
+        "X_orig": X_orig,
+        "Y_ref": Y_ref,
+        "X_pinn": X_pinn,
+        "X_err": X_err if X_err is not None else np.full_like(X_orig, 1e-4, dtype=np.float32),
+        "G_mags": G_mags if G_mags is not None else np.zeros(num_samples, dtype=np.float32),
+    }
+    if params is not None:
+        save_dict["params"] = params
+    if X_huang is not None:
+        save_dict["X_huang"] = X_huang
+    if R_pred is not None:
+        save_dict["R_pred"] = R_pred
+
+    np.savez_compressed(output_filepath, **save_dict)
 
 
 def export_test_predictions(
@@ -35,20 +92,30 @@ def export_test_predictions(
     The exported `.npz` archive is intended for downstream evaluation and plotting
     routines, decoupling training from the analysis pipeline.
 
-    Args:
-        model: Trained PyTorch model that produces either a predicted correction factor
-            R(lambda) or PCA coefficients that can be reconstructed to R(lambda).
-        X_tensor: Input Gaia BP/RP spectra with shape (num_samples, num_channels).
-        Y_tensor: Reference CALSPEC spectra with shape (num_samples, num_channels).
-        X_err_tensor: Input flux uncertainties with shape (num_samples, num_channels).
-        output_filepath: Destination `.npz` filename for the exported results.
-        params_tensor: Optional physical parameters per sample.
-        wave: Optional wavelength grid. If omitted, a default 330-1050 nm grid is generated.
-        G_mags_tensor: Optional Gaia G magnitudes for each sample.
-        X_huang_tensor: Optional baseline predictions from Huang et al. 2024.
+    Parameters
+    ----------
+    model : torch.nn.Module
+        Model that predicts a correction ratio or PCA coefficients for that ratio.
+    X_tensor : torch.Tensor
+        Input Gaia BP/RP spectra with shape ``(num_samples, num_channels)``.
+    Y_tensor : torch.Tensor
+        Reference CALSPEC spectra with shape ``(num_samples, num_channels)``.
+    X_err_tensor : torch.Tensor
+        Input flux uncertainties with shape ``(num_samples, num_channels)``.
+    output_filepath : str
+        Destination path for the exported ``.npz`` file.
+    params_tensor : torch.Tensor, optional
+        Physical parameters for each sample.
+    wave : numpy.ndarray, optional
+        Wavelength grid. If omitted, a 330-1050 nm grid is generated.
+    G_mags_tensor : torch.Tensor, optional
+        Gaia G magnitudes for each sample.
+    X_huang_tensor : torch.Tensor, optional
+        Baseline predictions from Huang et al. (2024).
 
-    Returns:
-        None
+    Returns
+    -------
+    None
     """
     model.eval()
     device = next(model.parameters()).device
@@ -90,23 +157,16 @@ def export_test_predictions(
     if wave is None:
         wave = np.linspace(330, 1050, num_channels, dtype=np.float32)
 
-    output_dir = os.path.dirname(output_filepath)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-
-    save_dict: Dict[str, np.ndarray] = {
-        "wave": wave,
-        "X_orig": X_np,
-        "Y_ref": Y_np,
-        "X_err": X_err_np,
-        "X_pinn": X_cal_pinn_np,
-        "R_pred": R_pred_np,
-        "G_mags": G_mags_np,
-        "X_huang": X_huang_np,
-    }
-
-    if params_np is not None:
-        save_dict["params"] = params_np
-
-    np.savez_compressed(output_filepath, **save_dict)
+    save_prediction_archive(
+        output_filepath=output_filepath,
+        wave=wave,
+        X_orig=X_np,
+        Y_ref=Y_np,
+        X_pinn=X_cal_pinn_np,
+        X_err=X_err_np,
+        params=params_np,
+        G_mags=G_mags_np,
+        X_huang=X_huang_np,
+        R_pred=R_pred_np,
+    )
     print(f"[✓] Inference data exported to: {output_filepath}")

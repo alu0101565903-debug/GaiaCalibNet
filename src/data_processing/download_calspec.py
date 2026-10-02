@@ -1,11 +1,11 @@
-"""
-Module: download_calspec.py
-Report Section: 4.1 CALSPEC Data Acquisition
+"""Download flux-calibrated CALSPEC spectra for cross-matched targets.
 
-This script downloads the absolute flux-calibrated 1D spectral FITS files 
-from the STScI CALSPEC repository for the targets successfully crossmatched 
-with the Gaia DR3 framework. It utilizes multithreading for rapid retrieval
-and implements safety checks to prevent corrupt files.
+Files are retrieved from the STScI archive using multiple worker threads and
+validated to avoid retaining incomplete downloads.
+
+Notes
+-----
+Report context: Section 4.1, CALSPEC Data Acquisition.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed

@@ -1,21 +1,18 @@
-r"""
-Module: alternative_metrics.py
-Report Section: Chapter 8 Model Evaluation & Error Metrics
+r"""Provide astrophysical metrics for spectrophotometric recalibration.
 
-Domain-Specific Astrophysical Metrics for Spectrophotometric Recalibration.
+The metrics address edge effects and near-zero flux values that can make
+standard statistics unreliable around absorption lines and band edges.
 
-This module provides a comprehensive suite of evaluation metrics tailored for 
-astrophysical continuum recalibration models (e.g., Gaia BP/RP Physics-Informed 
-Neural Networks). Standard statistical metrics (such as unweighted MAPE) often suffer 
-from edge-effect singularities or near-zero flux divisions near stellar absorption lines 
-and spectral band edges. 
+Metrics
+-------
+- Peak-normalized MAE and normalized standard deviation use global continuum baselines.
+- Reduced chi-square accounts for instrumental uncertainty and reference error floors.
+- Band metrics detect wavelength units and evaluate blue, green, and red regions.
+- Cosine similarity evaluates continuum shape independently of flux scale.
 
-The metrics in this module address these challenges by introducing:
-- Peak-Normalized MAE (PN-MAE / NMAE) and NSTD percentage using global continuum baselines.
-- True Reduced Chi-Square ($\chi^2_\nu$) accounting for both instrumental uncertainties 
-  and systematic reference floors (e.g., CALSPEC ground-truth errors).
-- Automated spectral band decomposition (Blue, Green, Red) with unit autodetection (Å vs. nm).
-- Spectral Cosine Similarity to evaluate continuum shape alignment independently of flux scale.
+Notes
+-----
+Report context: Chapter 8, Model Evaluation and Error Metrics.
 """
 
 from typing import Dict

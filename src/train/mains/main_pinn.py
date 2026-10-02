@@ -1,9 +1,9 @@
 """
-Train the full Gaia-to-CALSPEC PINN model on the complete dataset.
+Train the full Gaia-to-CALSPEC PINN model, optionally reserving a test subset.
 
 This script fits the same direct calibration pipeline used in the LOOCV setup,
-trains it on all available spectra, and saves the artifacts required to apply the
-learned correction to new Gaia spectra afterwards.
+trains it on all non-reserved spectra, and saves the artifacts required to apply
+the learned correction to new Gaia spectra afterwards.
 
 Saved artifacts:
 - model weights for the full ensemble
@@ -11,65 +11,60 @@ Saved artifacts:
 - stellar mean/std for parameter standardization
 - wavelength grid and metadata needed for inference
 - a JSON config capturing the training setup
+- optional test predictions, metrics, and plots
 
 The output directory is meant to be reusable in inference with the project helpers.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict
 
 import numpy as np
 import torch
-from scipy.ndimage import gaussian_filter1d
-from sklearn.decomposition import PCA
 
 from src.models.pinn_architecture import BlueWiggleNet, DirectConvPINN
 from src.models.pinn_export_models import EnsembleExportModel
 from src.train.loss.physics_loss import BluePhysicsLoss, DirectPhysicsLoss
 from src.train.training_functions.pinn_trainer import train_fold
+from src.utils.processing.pinn_data import apply_huang_correction, fit_log_ratio_pca, load_pinn_dataset
 from src.utils.reproducibility_utils import set_seed
-from src.utils.stellar_loader import load_stellar_parameters
-
-
-def load_dataset(data_dir: Path) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Load spectra, flux errors, stellar params and wavelength grid."""
-    X = np.load(data_dir / "X.npy").astype(np.float32)
-    Y = np.load(data_dir / "Y.npy").astype(np.float32)
-    E = np.load(data_dir / "X_error.npy").astype(np.float32)
-    wave = np.load(data_dir / "wave_grid.npy").astype(np.float32)
-    params = load_stellar_parameters(data_dir)
-    g_mags = np.load(data_dir / "G_mags.npy").astype(np.float32)
-    return X, Y, E, params, wave, g_mags
-
-
-def fit_pca_ratio(X: np.ndarray, Y: np.ndarray, num_components: int, random_state: int) -> Tuple[np.ndarray, np.ndarray]:
-    """Fit PCA on the log calibration-ratio field using the whole dataset."""
-    ratio = Y / np.clip(X, 1e-16, None)
-    ratio = np.clip(ratio, 0.1, 15.0)
-    ratio_log = np.log(ratio)
-    ratio_log_smooth = gaussian_filter1d(ratio_log, sigma=0.5, axis=1)
-
-    pca = PCA(n_components=num_components, random_state=random_state)
-    pca.fit(ratio_log_smooth)
-    return pca.components_, pca.mean_
+from src.utils.processing.stellar_loader import standardize_stellar_parameters
+from src.utils.visualize_models_performance.export_utils import export_test_predictions
+from src.utils.visualize_models_performance.metrics_eval import evaluate_test_set_from_file
+from src.utils.visualize_models_performance.plot_model_comparison import (
+    generate_plots_from_file,
+    plot_training_history,
+)
 
 
 def train_full_pinn(
     data_dir: str | Path,
     output_dir: str | Path,
-    num_components: int = 40,
+    num_components: int = 20,
     lambda_smooth: float = 1e-4,
     lambda_reg: float = 1e-4,
     epochs_adam: int = 600,
-    epochs_blue: int = 150,
+    epochs_blue: int = 200,
     random_state: int = 42,
+    n_test_samples: int = 0,
     device: str | torch.device | None = None,
+    *,
+    lr_base: float = 1e-3,
+    lr_blue: float = 1e-3,
+    weight_decay_base: float = 1e-4,
+    weight_decay_blue: float = 0.0,
+    lambda_reg_blue: float = 1e-3,
+    lambda_smooth_blue: float = 1e-4,
 ) -> Dict[str, Any]:
-    """Train the full ensemble on all spectra and save all artifacts for inference."""
+    """Train with the selected seed-42 hyperparameters, optionally reserving stars.
+
+    Defaults match candidate 12 from the hyperparameter search, with both
+    network widths fixed at 128 and BP-RP, G and RUWE as auxiliary inputs.
+    This performs one fit, with the seed set once at the start.
+    """
     set_seed(random_state)
     data_dir = Path(data_dir)
     out_dir = Path(output_dir)
@@ -79,47 +74,80 @@ def train_full_pinn(
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     device = torch.device(device)
 
-    X, Y, E, params, wave, _ = load_dataset(data_dir)
+    X, Y, E, params_raw, wave, g_mags, source_ids = load_pinn_dataset(data_dir, standardize_params=False)
+
+    n_samples = X.shape[0]
+    if n_test_samples < 0 or n_test_samples >= n_samples:
+        raise ValueError(
+            f"n_test_samples must be between 0 and {n_samples - 1}; "
+            f"got {n_test_samples}."
+        )
+    if n_samples - n_test_samples < num_components:
+        raise ValueError(
+            "The number of non-reserved stars must be at least "
+            f"num_components ({num_components}); got {n_samples - n_test_samples}."
+        )
+
+    sample_order = np.random.default_rng(random_state).permutation(n_samples)
+    test_indices = np.sort(sample_order[:n_test_samples])
+    train_indices = np.sort(sample_order[n_test_samples:])
+    np.save(out_dir / "train_indices.npy", train_indices)
+    np.save(out_dir / "test_indices.npy", test_indices)
+
+    params, mean_p, std_p, ruwe_median = standardize_stellar_parameters(params_raw, train_indices)
+    X_train, Y_train = X[train_indices], Y[train_indices]
+    E_train, params_train = E[train_indices], params[train_indices]
 
     # PCA basis for the absolute calibration ratio R(lambda)
-    pca_basis, pca_mean = fit_pca_ratio(X, Y, num_components=num_components, random_state=random_state)
+    pca_basis, pca_mean = fit_log_ratio_pca(
+        X_train, Y_train, num_components=num_components, random_state=random_state
+    )
 
     np.save(out_dir / "pca_basis.npy", pca_basis)
     np.save(out_dir / "pca_mean.npy", pca_mean)
 
-    mean_p = np.load(data_dir / "stellar_mean_p.npy")
-    std_p = np.load(data_dir / "stellar_std_p.npy")
     np.save(out_dir / "stellar_mean_p.npy", mean_p)
     np.save(out_dir / "stellar_std_p.npy", std_p)
+    np.save(out_dir / "ruwe_imputation_median.npy", ruwe_median)
+    np.save(out_dir / "ruwe_missing.npy", np.isnan(params_raw[:, 2]))
     np.save(out_dir / "wave_grid.npy", wave)
 
     blue_mask = wave < 450.0
     num_blue_channels = int(np.sum(blue_mask))
 
-    X_t = torch.tensor(X, dtype=torch.float32, device=device)
-    Y_t = torch.tensor(Y, dtype=torch.float32, device=device)
-    E_t = torch.tensor(E, dtype=torch.float32, device=device)
-    P_t = torch.tensor(params, dtype=torch.float32, device=device)
+    X_t = torch.tensor(X_train, dtype=torch.float32, device=device)
+    Y_t = torch.tensor(Y_train, dtype=torch.float32, device=device)
+    E_t = torch.tensor(E_train, dtype=torch.float32, device=device)
+    P_t = torch.tensor(params_train, dtype=torch.float32, device=device)
 
+    hidden_dim = 128  # Match the architecture used in the winning search.
     base_model = DirectConvPINN(
         input_dim=X.shape[1],
         pca_basis=pca_basis,
         pca_mean=pca_mean,
         num_params=params.shape[1],
+        hidden_dim=hidden_dim,
     ).to(device)
 
     blue_model = BlueWiggleNet(
         input_dim=num_blue_channels,
         num_params=params.shape[1],
+        hidden_dim=hidden_dim,
     ).to(device)
 
-    optimizer_base = torch.optim.Adam(base_model.parameters(), lr=1e-3, weight_decay=1e-4)
-    optimizer_blue = torch.optim.Adam(blue_model.parameters(), lr=1e-3)
+    optimizer_base = torch.optim.Adam(
+        base_model.parameters(), lr=lr_base, weight_decay=weight_decay_base
+    )
+    optimizer_blue = torch.optim.Adam(
+        blue_model.parameters(), lr=lr_blue, weight_decay=weight_decay_blue
+    )
 
     criterion_base = DirectPhysicsLoss(lambda_smooth=lambda_smooth, lambda_reg=lambda_reg).to(device)
-    criterion_blue = BluePhysicsLoss(lambda_reg=1e-3, lambda_smooth=1e-4).to(device)
+    criterion_blue = BluePhysicsLoss(
+        lambda_reg=lambda_reg_blue, lambda_smooth=lambda_smooth_blue
+    ).to(device)
 
-    trained_model, trained_blue_model = train_fold(
+    trained_model, trained_blue_model, training_history = train_fold(
         model=base_model,
         blue_model=blue_model,
         criterion_base=criterion_base,
@@ -133,7 +161,12 @@ def train_full_pinn(
         blue_mask=blue_mask,
         epochs_adam=epochs_adam,
         epochs_blue=epochs_blue,
+        return_history=True,
     )
+
+    history_filepath = out_dir / "training_loss_history.npz"
+    np.savez_compressed(history_filepath, **training_history)
+    plot_training_history(history_filepath, out_dir / "training_loss.pdf")
 
     ensemble = EnsembleExportModel(
         base_model=trained_model,
@@ -151,23 +184,41 @@ def train_full_pinn(
         "wave_grid": wave,
         "stellar_mean": mean_p,
         "stellar_std": std_p,
+        "ruwe_imputation_median": ruwe_median,
         "pca_basis": pca_basis,
         "pca_mean": pca_mean,
         "num_components": num_components,
         "num_params": params.shape[1],
         "input_dim": X.shape[1],
+        "hidden_dim": hidden_dim,
     }, out_dir / "model_bundle.pt")
 
     config = {
         "random_state": random_state,
+        "normalization": "fit on training stars only",
+        "ruwe_imputation": "median of observed training RUWE before normalization",
+        "ruwe_imputation_median": ruwe_median,
+        "n_missing_ruwe_train": int(np.isnan(params_raw[train_indices, 2]).sum()),
+        "n_missing_ruwe_test": int(np.isnan(params_raw[test_indices, 2]).sum()),
         "device": str(device),
         "num_components": num_components,
         "lambda_smooth": lambda_smooth,
         "lambda_reg": lambda_reg,
         "epochs_adam": epochs_adam,
         "epochs_blue": epochs_blue,
+        "lr_base": lr_base,
+        "lr_blue": lr_blue,
+        "weight_decay_base": weight_decay_base,
+        "weight_decay_blue": weight_decay_blue,
+        "lambda_reg_blue": lambda_reg_blue,
+        "lambda_smooth_blue": lambda_smooth_blue,
+        "use_ruwe": True,
+        "blue_hidden_dim": hidden_dim,
         "input_dim": X.shape[1],
-        "n_samples": X.shape[0],
+        "hidden_dim": hidden_dim,
+        "n_samples": n_samples,
+        "n_train_samples": len(train_indices),
+        "n_test_samples": len(test_indices),
         "num_params": params.shape[1],
         "blue_threshold_nm": 450.0,
         "blue_mask_n_channels": num_blue_channels,
@@ -178,101 +229,67 @@ def train_full_pinn(
     with open(out_dir / "training_config.json", "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
 
+    if n_test_samples:
+        test_results_filepath = out_dir / "test_predictions.npz"
+        X_test_t = torch.tensor(X[test_indices], dtype=torch.float32, device=device)
+        Y_test_t = torch.tensor(Y[test_indices], dtype=torch.float32, device=device)
+        E_test_t = torch.tensor(E[test_indices], dtype=torch.float32, device=device)
+        P_test_t = torch.tensor(params[test_indices], dtype=torch.float32, device=device)
+        G_mags_test_t = torch.tensor(g_mags[test_indices], dtype=torch.float32, device=device)
+        X_huang_test = apply_huang_correction(
+            X[test_indices],
+            E[test_indices],
+            source_ids[test_indices],
+            g_mags[test_indices],
+        )
+        X_huang_test_t = torch.tensor(X_huang_test, dtype=torch.float32, device=device)
+
+        export_test_predictions(
+            model=ensemble,
+            X_tensor=X_test_t,
+            Y_tensor=Y_test_t,
+            X_err_tensor=E_test_t,
+            output_filepath=str(test_results_filepath),
+            params_tensor=P_test_t,
+            wave=wave,
+            G_mags_tensor=G_mags_test_t,
+            X_huang_tensor=X_huang_test_t
+        )
+        evaluate_test_set_from_file(
+            input_filepath=str(test_results_filepath),
+            output_dir=str(out_dir / "test_metrics"),
+            num_knots=num_components,
+            model_name="PINN Test Set"
+        )
+        generate_plots_from_file(
+            input_filepath=str(test_results_filepath),
+            output_dir=str(out_dir / "test_plots"),
+            num_samples=n_test_samples,
+            include_gaussian=False
+        )
+
     print(f"[✓] Full PINN training complete.")
     print(f"[✓] Artifacts saved to: {out_dir}")
     return config
 
 
-def calibrate_spectrum(
-    wave_raw: np.ndarray,
-    flux_raw: np.ndarray,
-    bp_rp: float,
-    g_mag: float,
-    ruwe: float,
-    model_bundle_path: str | Path,
-    mean_p: np.ndarray,
-    std_p: np.ndarray,
-    device: str | torch.device | None = None,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Apply the trained ensemble correction to a single Gaia spectrum.
-
-    Returns wave_grid, original_flux, corrected_flux.
-    """
-    from scipy.interpolate import interp1d
-
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device(device)
-
-    bundle = torch.load(model_bundle_path, map_location=device)
-    wave_grid = bundle["wave_grid"]
-    blue_mask = bundle["blue_mask"]
-    pca_basis = bundle["pca_basis"]
-    pca_mean = bundle["pca_mean"]
-    num_params = bundle["num_params"]
-
-    wave_standard = np.arange(336.0, 1022.0, 2.0, dtype=np.float32)
-    interp = interp1d(wave_raw, flux_raw, kind="cubic", bounds_error=False, fill_value="extrapolate")
-    flux_interp = interp(wave_standard).astype(np.float32)
-
-    params_raw = np.array([bp_rp, g_mag, ruwe], dtype=np.float32)
-    params_std = (params_raw - mean_p) / (std_p + 1e-8)
-
-    x_t = torch.tensor(flux_interp, dtype=torch.float32).unsqueeze(0).to(device)
-    params_t = torch.tensor(params_std, dtype=torch.float32).unsqueeze(0).to(device)
-
-    base_model = DirectConvPINN(
-        input_dim=len(wave_standard),
-        pca_basis=pca_basis,
-        pca_mean=pca_mean,
-        num_params=num_params,
-    ).to(device)
-
-    blue_model = BlueWiggleNet(
-        input_dim=int(np.sum(blue_mask)),
-        num_params=num_params,
-    ).to(device)
-
-    ensemble = EnsembleExportModel(
-        base_model=base_model,
-        blue_model=blue_model,
-        blue_mask=blue_mask,
-        wave_grid=wave_standard,
-    ).to(device)
-
-    ensemble.load_state_dict(torch.load(model_bundle_path, map_location=device))
-    ensemble.eval()
-
-    with torch.no_grad():
-        r_final = ensemble(x_t, params_t).squeeze(0).cpu().numpy()
-
-    corrected_flux = flux_interp * r_final
-    return wave_standard, flux_interp, corrected_flux
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Train the full Gaia PINN calibration model.")
-    parser.add_argument("--data-dir", type=Path, default=Path("data/processed/nn_data"), help="Directory with X.npy, Y.npy, X_error.npy, ...")
-    parser.add_argument("--output-dir", type=Path, default=Path("results/models/full_pinn_training"), help="Directory for saved weights and metadata")
-    parser.add_argument("--num-components", type=int, default=40, help="Number of PCA components for the calibration ratio.")
-    parser.add_argument("--lambda-smooth", type=float, default=1e-4)
-    parser.add_argument("--lambda-reg", type=float, default=1e-4)
-    parser.add_argument("--epochs-adam", type=int, default=600)
-    parser.add_argument("--epochs-blue", type=int, default=150)
-    parser.add_argument("--seed", type=int, default=42)
-    args = parser.parse_args()
-
-    train_full_pinn(
-        data_dir=args.data_dir,
-        output_dir=args.output_dir,
-        num_components=args.num_components,
-        lambda_smooth=args.lambda_smooth,
-        lambda_reg=args.lambda_reg,
-        epochs_adam=args.epochs_adam,
-        epochs_blue=args.epochs_blue,
-        random_state=args.seed,
-    )
-
-
 if __name__ == "__main__":
-    main()
+    # Winning search configuration: candidate 12, training seed 42.
+    train_full_pinn(
+        data_dir=Path("data/processed/nn_data"),
+        output_dir=Path("results/models/full_pinn_training/10_eps_test_samples"),
+        num_components=20,
+        lambda_smooth=1e-4,
+        lambda_reg=1e-4,
+        epochs_adam=600,
+        epochs_blue=200,
+        random_state=42,
+        lr_base=1e-3,
+        lr_blue=1e-3,
+        weight_decay_base=1e-4,
+        weight_decay_blue=0.0,
+        lambda_reg_blue=1e-3,
+        lambda_smooth_blue=1e-4,
+        n_test_samples=10,
+        device=None,
+    )

@@ -1,15 +1,16 @@
-"""
-Module: ensemble_export_models.py
-Report Section: 4.6 Model Export & Inference Wrappers
+"""Provide PyTorch wrappers for model export and inference.
 
-This module defines PyTorch wrapper models designed for inference, model deployment, 
-and pipeline integration.
+The wrappers combine calibration models or expose precomputed cross-validation
+predictions through a consistent inference interface.
 
-Classes:
-    - EnsembleExportModel: Combines a base PINN model with a specialized blue-region 
-      correction model (BlueWiggleNet) to output fine-tuned calibration ratios.
-    - DirectExportModel: Wrapper class returning precomputed aggregated Leave-One-Out 
-      Cross-Validation (LOOCV) predictions to maintain pipeline interface compatibility.
+Classes
+-------
+- ``EnsembleExportModel`` combines a base PINN and blue-region correction model.
+- ``DirectExportModel`` exposes aggregated LOOCV predictions.
+
+Notes
+-----
+Report context: Section 4.6, Model Export and Inference Wrappers.
 """
 
 from typing import Optional, Union
@@ -85,15 +86,15 @@ class EnsembleExportModel(nn.Module):
         torch.Tensor
             Fused calibration ratio R(lambda) of shape (batch_size, input_dim).
         """
-        # 1. Global continuum prediction
+        # 1. Predict the global continuum.
         coeffs = self.base_model(x, params)
         R_base = self.base_model.reconstruct(coeffs)
 
-        # 2. Specialized blue-region fine prediction
+        # 2. Predict the fine-scale blue-region correction.
         x_blue = x[:, self.blue_mask]
         R_blue_fine = self.blue_model(x_blue, params)
 
-        # 3. Spectral fusion
+        # 3. Combine the spectral predictions.
         R_final = R_base.clone()
         R_final[:, self.blue_mask] = R_base[:, self.blue_mask] * R_blue_fine
 
