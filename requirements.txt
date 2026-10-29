@@ -1,3 +1,6 @@
+# Python dependencies for the pipeline, examples, tests, and notebook tools.
+# Architecture PDF export also requires local PlotNeuralNet/ and system pdflatex.
+
 # Data manipulation and scientific computing
 numpy>=1.26.0
 pandas>=2.1.0
@@ -9,6 +12,10 @@ astropy>=6.0.0
 astroquery>=0.4.7
 gaiaxpy
 
+# Catalog downloads and HTML parsing
+requests>=2.31.0
+beautifulsoup4>=4.8.0  # Imported as bs4 by the CALSPEC catalog scraper
+
 # Visualization
 matplotlib>=3.8.0
 seaborn>=0.13.0
@@ -17,7 +24,6 @@ graphviz>=0.20.3
 # Machine Learning and Deep Learning
 scikit-learn>=1.4.0
 joblib>=1.3.2
-requests>=2.31.0
 torch>=2.2.0
 h5py>=3.10.0         # Useful for saving large datasets of spectra efficiently
 

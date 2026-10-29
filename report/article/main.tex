@@ -1,0 +1,666 @@
+\RequirePackage{etex}
+\documentclass{aa}  
+\usepackage{epstopdf}
+
+\usepackage{graphicx}
+\usepackage{txfonts}
+\usepackage{placeins}
+\usepackage{hyperref}
+
+\setlength{\parskip}{0.15cm}
+\usepackage{enumitem}
+\usepackage{subcaption}
+\usepackage{caption}
+\captionsetup{compatibility=false}
+\usepackage{epstopdf}
+
+\begin{document}
+
+   \title{A recalibration of Gaia DR3 spectrophotometry using CALSPEC}
+
+   \author{Yaiza~M. Martín~Mesones\inst{1}\corrauth{ymartinmesones@gmail.com}
+        \and C. Allende~Prieto\inst{2}
+        }
+
+   \institute{Universidad de La Laguna (ULL), 38206 La Laguna, Tenerife, España
+   \and
+   Instituto de Astrofísica de Canarias (IAC), C/ Vía Láctea s/n, 38205 La Laguna, Tenerife, España
+   }
+
+   \date{\textit{Received ---, 2026; accepted ---}}
+
+    \abstract{The continuous BP/RP (XP) spectra from the \textit{Gaia} Data Release 3 (DR3) provide an unprecedented dataset for stellar astrophysics. However, deriving an accurate absolute spectrophotometric calibration remains challenging due to complex, non-linear instrumental responses and high-frequency artifacts at low-signal spectral edges. In this work, we present a robust, data-driven machine learning framework to calibrate Gaia DR3 XP observations against the high-fidelity CALSPEC standard catalog. We developed a Physics-Informed Neural Network (PINN) that maps input spectra and auxiliary stellar parameters to a logarithmic calibration space, predicting the coefficients of an empirically derived Principal Component Analysis (PCA) basis. To address severe polynomial ringing below 450\text{~nm}, we introduced a specialized high-resolution sub-network (\textit{BlueWiggleNet}) that applies localized multiplicative corrections without disrupting the global continuum. Evaluated using Leave-One-Out Cross-Validation, our model achieves a global median Peak-Normalized Mean Absolute Error (PN-MAE) of 0.524\% and a standard deviation (PN-STD) of 0.9\%, significantly improving upon the typical $>2\text{-}3\%$ systematic flux dispersion present in uncalibrated Gaia observations and standard empirical baselines. By embedding strict physical constraints into the deep learning architecture, our framework successfully decouples true stellar features from instrumental noise. The complete source code and trained models are publicly available.}
+
+   \keywords{Methods: data analysis -- Methods: numerical -- Techniques: spectroscopic -- Catalogs -- Surveys}
+
+   \maketitle
+
+\section{Introduction}
+
+The Gaia Data Release 3 (DR3; \citealt{gaia_dr3_2023}) includes spectrophotometry for nearly 220 million sources, and the next Gaia data release (DR4) will dramatically increase that figure to more than 1800 million sources \citep{gaia_dr4_web}.
+
+The Gaia spectrophotometry has been calibrated internally, and then placed on an absolute scale using ground-based observations for a network of standards (\citealt{pancino2012}, \citeyear{pancino2022}; \citealt{carrasco2021}; \citealt{montegriffo2023gaia}; \citealt{de_angeli_2023}), ultimately tied to the Hubble Space Telescope flux scale, based on model atmospheres for a set of DA white dwarfs (\citealt{bohlin2014}). The absolute fluxes ($BP$-$RP$ continuous spectra) are not actually given in the Gaia catalog, but can be reconstructed from the coefficients of the basis functions provided.
+
+An accuracy of about 3\% has been reported in the literature for the continuous Gaia spectrophotometry (\citealt{huang2024}; \citealt{ye2025}), which has been claimed to be reduced to $\sim 2\%$ by recalibration based on CALSPEC data or model atmospheres. In this work, we succeed in pushing down the uncertainties even further to $\sim 1\%$. Section\ref{sec:Data} describes the data we use and the pre-processing. Section\ref{sec:methodology} is devoted to the algorithms and analysis, while Section \ref{sec:Results} presents our results, which are further discussed in Section \ref{sec:Discussion} and summarized in Section \ref{sec:conclusions}. The Python code to apply our corrections and reproduce our models is publicly available\footnote{\url{https://github.com/alu0101565903-debug/GaiaCalibNet.git}}. The software package includes the routines to train/test the neural network, and a user's guide.
+
+
+\section{Data} \label{sec:Data}
+\subsection{The CALSPEC sample} \label{calspec_sample}
+
+To establish the absolute spectrophotometric ground truth for our calibration, we compiled a comprehensive catalog of CALSPEC standard stars from the Space Telescope Science Institute (STScI) public repository \citep{bohlin2014, bohlin2020, bohlin2022}. We restricted our initial sample strictly to observational data, explicitly excluding purely theoretical models.
+
+The Right Ascension (RA) and Declination (Dec) for each target were extracted directly from the astrometric keywords in the observational FITS headers, automatically converting sexagesimal formats to decimal degrees, checking both the primary HDU (Extension 0) and the secondary extension as a fallback. For targets where this information was missing or malformed, coordinates were resolved by querying the SIMBAD database using the target names. Special care was taken to preserve specific CALSPEC identifiers (e.g., P330E) and properly formatting other naming conventions, including white dwarfs, 2MASS, Bonner Durchmusterung (BD), and NGC catalogs.
+
+Finally, to complement the astrometric information, reference optical $V$-band magnitudes were collected from the official STScI CALSPEC tables. These magnitudes were cross-referenced against our sample using both the target's header name and its file prefix to maximize successful associations. This consolidated metadata catalog of standard stars provides the necessary baseline for the subsequent cross-match with the Gaia database.
+
+
+\subsection{Gaia observations and cross-match}
+
+We cross-matched our base CALSPEC catalog with the Gaia Data Release 3 (Gaia DR3) database \citep{gaia_dr3_2023}. To ensure robust data retrieval and bypass potential server downtimes, queries were executed via a multi-server Table Access Protocol (TAP) fallback system, integrating the primary ESA server with backup mirror nodes (ARI Heidelberg, AIP Potsdam, and INAF). Since our goal is to calibrate low-resolution spectrophotometric observations, we restricted the search exclusively to Gaia sources with available continuous BP/RP ($XP$) spectra (\texttt{has\_xp\_continuous = 'True'}), as shown in \cite{de_angeli_2023}. 
+
+To identify true counterparts and avoid false associations in crowded fields or for high proper-motion stars, candidate sources were initially queried within a $15\arcsec$ search radius around each CALSPEC position. To properly account for stellar motion between the Gaia DR3 reference epoch (J2016.0) and the CALSPEC epoch (J2000.0), we propagated the 3D space motion of each candidate source using its full astrometric solution. For a minority of candidates where specific astrometric parameters were unavailable or masked in the Gaia DR3 catalog, these components were conservatively assumed to be zero in the epoch transformation.
+
+A candidate was confirmed as a valid match only if it satisfied two strict physical conditions:
+\begin{enumerate}[itemsep=0.25cm]
+    \item \textbf{Astrometric proximity:} The epoch-corrected angular distance between the CALSPEC coordinate and the Gaia position was required to be $\leq 5.0\arcsec$, with the majority of matches tightly constrained within $1.5\arcsec$.
+    \item \textbf{Photometric consistency:} A differential magnitude filter was applied between the Gaia $G$-band and the CALSPEC optical $V$-band. The absolute difference, $|G - V|$, was tightly restricted (typically $\leq 0.3\text{ mag}$) to rule out field contamination, unresolved binaries, or gross misidentifications.
+\end{enumerate}
+
+When multiple candidates met these criteria within the search radius, they were sorted by angular separation and the nearest object was selected, systematically purging duplicate Gaia source IDs. This procedure yielded a high-quality cross-matched sample of CALSPEC targets with full Gaia DR3 astrometry, $BP/RP$ mean spectra, and broadband photometry.
+
+Figure \ref{fig:cmd_calspec} shows the Gaia DR3 Color-Magnitude Diagram ($M_G$ vs. $G_{\text{BP}} - G_{\text{RP}}$) for the cross-matched CALSPEC dataset. The sample exhibits a clear bimodal distribution in luminosity which is heavily dominated by hot primary spectrophotometric standards, most of them on the white dwarf cooling sequence ($M_G \gtrsim 8\text{ mag}$, $G_{\text{BP}} - G_{\text{RP}} \lesssim 0\text{ mag}$) and solar-type stars on the main sequence. A small number of extreme late-type stars and evolved giants are also preserved, ensuring a broad coverage across the color space for our calibration pipeline.
+
+
+\begin{figure}[ht!]
+    \centering
+    \includegraphics[width=\hsize]{general_sample/cmd_crossmatch.eps}
+    \caption{Color-magnitude diagram ($M_G$ vs. $G_{\text{BP}} - G_{\text{RP}}$) of the cross-matched CALSPEC and Gaia DR3 sample. Absolute $G$-band magnitudes were computed using Gaia 
+    DR3 parallaxes. The sample covers a broad color range, highlighted by the white dwarf cooling sequence ($M_G \gtrsim 8\text{~mag}$) and main-sequence standard stars.}
+    \label{fig:cmd_calspec}
+\end{figure}
+
+
+Following the successful cross-match with the Gaia DR3 catalog, the corresponding absolute flux-calibrated 1D spectral FITS files for the confirmed targets were acquired from the STScI CALSPEC repository. To optimize this data acquisition process, we implemented a custom download routine. This pipeline incorporates strict safety checks, including timeout limits and non-zero content guards, to prevent the storage of corrupt or partially downloaded files, thereby ensuring the integrity of the reference spectra prior to the resolution matching phase.
+
+
+
+\subsection{Spectral resolution matching}
+
+To directly compare the high-resolution CALSPEC synthetic and observational spectra with Gaia BP/RP observations, the reference spectra must be degraded to match the instrumental resolution of Gaia. Prior to the convolution, two essential preprocessing steps were applied to the CALSPEC data to ensure strict physical and mathematical consistency: first, all units were converted from \AA ngstr\"oms and erg/s/cm$^2$/\AA\ to nanometers and W/m$^2$/nm, respectively. Second, to prevent boundary artifacts when the convolution kernel approaches the red edge of the data, the spectra were extrapolated up to 1200\text{~nm}. Rather than applying a constant flux extension (flat padding), as seen in \citet{huang2024}, we implemented a physically motivated smooth linear extrapolation. The local continuum slope was computed evaluating the last 10 data points of each spectrum and extended up to 1200\text{~nm}, enforcing a strict non-negativity constraint ($f_\lambda \ge 0$) to prevent unphysical sub-zero fluxes. This approach preserves the local trend of the source and avoids artificial discontinuities in the first derivative of the flux distribution.
+
+Once the reference spectra were properly prepared, the resolution degradation was carried out. Given that the intrinsic spectral resolution of CALSPEC is significantly higher ($\mathcal{P}_{\text{CALSPEC}} \approx 800$) than the wavelength-dependent resolution of the Gaia Blue Photometer (BP) and Red Photometer (RP), we simulated the Gaia Line Spread Function (LSF) using the empirical wavelength-dependent resolution curves, $\mathcal{P}(\lambda)$, defined by \citet{montegriffo2023gaia}. The spectral degradation was performed by convolving each CALSPEC flux density distribution, $f_\lambda(\lambda)$, with a variable Gaussian kernel $K(\lambda, \lambda_0)$. For each evaluation wavelength $\lambda_0$, the Gaussian kernel standard deviation, $\sigma_k(\lambda_0)$, was calculated by quadrature subtraction to account for the intrinsic resolution of the source spectra:
+
+\begin{equation}
+\sigma_k(\lambda_0) = \sqrt{\sigma_{\text{Gaia}}^2(\lambda_0) - \sigma_{\text{initial}}^2(\lambda_0)},
+\end{equation}
+
+\noindent where the standard deviations for Gaia and CALSPEC are derived using the fundamental relation between the Full Width at Half Maximum (FWHM) and the standard deviation of a Gaussian profile ($\text{FWHM} = 2\sqrt{2\ln 2}\,\sigma \approx 2.355\sigma$):
+
+\begin{equation}
+\sigma_{\text{Gaia}}(\lambda_0) = \frac{\lambda_0}{2\sqrt{2 \ln{2}} \, \mathcal{P}_{\text{Gaia}}(\lambda_0)},
+\end{equation}
+and
+\begin{equation}
+\sigma_{\text{initial}}(\lambda_0) = \frac{\lambda_0}{2\sqrt{2 \ln{2}} \, \mathcal{P}_{\text{CALSPEC}}}.
+\end{equation}
+
+The normalized kernel was integrated over the extended spectral range using Simpson's rule to evaluate the degraded flux at each wavelength grid point, $\lambda_0$, ensuring energy conservation across both photometers. This process yields a set of degraded CALSPEC spectra whose resolution and sampling match the Gaia BP (330-630\text{~nm}) and RP (640-1050\text{~nm}) operational domains.
+
+
+\subsection{Dataset preparation for neural network training}
+
+Following the spectral resolution matching, both the Gaia observations and the degraded CALSPEC reference spectra were aligned onto an unified wavelength grid $\Lambda = \{\lambda_k\}_{k=1}^{M}$, defined over the spectral domain $[336, 1020]\text{ nm}$ with a uniform step size of $\Delta\lambda = 2\text{ nm}$ ($M = 343$), emulating the typical output generated by the \texttt{GaiaXPy} framework (\citealt{de_angeli_2023}, \citealt{gaiaxpy_2022}).
+
+To resample the degraded CALSPEC spectra onto $\Lambda$ without introducing artificial high-frequency distortions, we applied a cubic spline interpolation ($S \in C^2$). For each sub-interval $[\lambda_i, \lambda_{i+1}]$ of the original high-resolution grid, the flux density is modeled as a piecewise third-order polynomial:
+\begin{equation}
+    S_i(\lambda) = a_i + b_i(\lambda - \lambda_i) + c_i(\lambda - \lambda_i)^2 + d_i(\lambda - \lambda_i)^3,
+\end{equation}
+enforcing continuity of the flux and its first two derivatives at the internal knots ($S_i^{(m)}(\lambda_{i+1}) = S_{i+1}^{(m)}(\lambda_{i+1})$ for $m \in \{0, 1, 2\}$). Evaluating $S(\lambda_k)$ generates the target reference vector $Y \in \mathbb{R}^M$.
+
+Simultaneously, the continuous sampled Gaia spectra were retrieved directly on the target grid $\Lambda$ using the \texttt{GaiaXPy} calibration framework \citep{gaiaxpy_2022}, guaranteeing exact point-to-point spectral alignment between observational inputs $X \in \mathbb{R}^M$ and physical ground truth targets $Y$.
+
+Prior to the calculation of the spectral correction ratio, a global flux scale validation was imposed. Spectra exhibiting extreme discrepancies between their median flux levels (differing by more than two orders of magnitude between Gaia and CALSPEC) were automatically rejected to prevent feeding critically miscalibrated samples into the training pipeline.
+
+Once this dimensional alignment and quality control were established, to optimize the data for neural network training, some transformations were applied to the raw flux arrays. Rather than training the model to predict the absolute reference flux directly, we formulated the task as a residual correction problem. By doing so, the target variable was defined as the spectral correction ratio given by:
+\begin{equation}
+    Y_{\text{ratio}} = \frac{f_{\lambda,\, \text{CALSPEC}}}{f_{\lambda,\, \text{Gaia}}}. 
+\end{equation}
+
+To ensure numerical stability during the optimization process, the observational flux denominator was bounded by a minimum epsilon ($\epsilon = 10^{-30}$) to prevent zero-division artifacts. Furthermore, to prevent gradients from exploding due to low-flux division artifacts at the spectral edges, this ratio was strictly clipped to a maximum value of 10.0.
+
+
+\section{Methodology} \label{sec:methodology}
+
+\subsection{Neural Network Architecture}
+To derive the continuous absolute spectral response function $R(\lambda)$, we developed a physics-constrained neural network architecture \citep{ness2015, karniadakis2021}. Rather than predicting the calibrated flux directly, the network learns to map low-resolution Gaia XP spectra to the Principal Component Analysis (PCA) coefficients of the calibration ratio. This enforces the fundamental physical relationship:
+\begin{equation}
+    Y_{\text{CALSPEC}} = X_{\text{Gaia}} \times R(\lambda).
+\end{equation}
+
+Then, to construct the target space for the network, the empirical calibration ratios of the training set, given by $R_{\text{train}} = Y_{\text{train}} / X_{\text{train}}$, are first transformed into logarithmic space. An orthonormal basis, $\mathbf{B}$, is then derived empirically by performing a PCA (using Singular Value Decomposition) on the covariance matrix of these log-transformed training ratios \citep{connolly1995}. 
+
+Modeling the PCA decomposition in log-space, $\ln(R)$, provides three critical advantages over a standard linear representation:
+\begin{enumerate}[itemsep=0.25cm]
+    \item \textbf{Strict Non-negativity:} The final continuous spectral response is reconstructed via an inverse exponential transformation as follows:
+    \begin{equation}
+        R(\lambda) = \exp\left( \mu(\lambda) + \sum_{j=1}^{K} c_j B_j(\lambda) \right),
+    \end{equation}
+    where:
+    \vspace{0.10cm}
+    \begin{itemize}[itemsep=0.10cm]
+        \item $\mu(\lambda)$ is the empirical mean log-ratio of the training set.
+        \item $B_j(\lambda)$ are the fixed orthonormal principal components.
+        \item $c_j$ are the network-predicted coefficients. 
+    \end{itemize}
+    \vspace{0.10cm} This formulation inherently guarantees $R(\lambda) > 0$, structurally preventing unphysical sub-zero flux corrections regardless of the model's output.
+    
+    \item \textbf{Symmetry of Ratios:} In linear space, inverse scaling factors (e.g., an overestimation of $R=2.0$ and an underestimation of $R=0.5$) are highly asymmetric around the identity ($R=1.0$). This asymmetry disproportionately drives the variance-maximization algorithm of PCA towards large positive spikes. In logarithmic space, these reciprocal variations become perfectly symmetric ($\ln(2.0) = -\ln(0.5)$), ensuring a mathematically balanced variance extraction.
+
+    \item \textbf{Multiplicative to Additive Mapping:} Instrumental calibration is an intrinsically multiplicative operation. The logarithmic transformation maps these multiplicative spectral corrections into additive perturbations ($\ln Y = \ln X + \ln R$). This aligns flawlessly with the foundational mathematics of PCA, which is designed to reconstruct signals strictly as an additive linear combination of basis vectors.
+\end{enumerate}
+
+Having established this mathematical foundation, the architecture is formalized as a continuous mapping from the low-resolution input space to the log-calibration latent space, structured into three primary computational stages:
+
+\begin{enumerate}[itemsep=0.25cm]
+    \item \textbf{Feature Extraction:} To preserve the dynamic range of low-signal domains (e.g., $\sim 10^{-16}\text{ W/m}^2\text{/nm}$) and ensure numerical stability during gradient descent, the input Gaia flux vector $X \in \mathbb{R}^{N}$ is first scale-normalized:
+    \begin{equation}
+        \tilde{X} = \frac{X}{\max(|X|) + \epsilon},
+    \end{equation}
+    where $\epsilon = 10^{-20}$ is a small constant introduced to prevent division by zero. This normalized spectrum is then fed into a 1D Convolutional Neural Network (CNN) to extract its overall shape and features. This network applies two sequential convolutional layers with Gaussian Error Linear Unit (GELU) activations \citep{hendrycks2016gelu}: the first expands the input to 16 channels (using a kernel size of 7 and stride of 2), and the second expands it further to 32 channels (using a kernel size of 5 and stride of 2). Next, an adaptive average pooling layer resamples the spatial length of these 32 channels down to exactly 128 discrete bins. Finally, this output is flattened to create a 4096-dimensional feature vector, $F_{\text{conv}}$.
+    
+    \item \textbf{Stellar Parameter Integration:} The spectral feature tensor is directly concatenated with an auxiliary stellar parameter vector $P \in \mathbb{R}^{3}$, which comprises the standardized BP-RP color, $G$ magnitude, and Renormalised Unit Weight Error (RUWE) \citep{riello2021}. Note that RUWE is included to inform the network of astrometric fit quality and potential multiplicity (e.g., unresolved binary systems). This yields the combined global feature vector $F_{\text{combined}} = [F_{\text{conv}} \parallel P] \in \mathbb{R}^{4099}$.
+
+    \item \textbf{Regression Head and Reconstruction:} The combined vector is propagated through a Multi-Layer Perceptron (MLP) with hidden dimensions of 128 and 64, utilizing GELU activations. The final linear projection maps the network to the $K$ principal components, producing the coefficient vector $\mathbf{c} \in \mathbb{R}^{K}$. Crucially, the weights and biases of this terminal layer are strictly zero-initialized ($\mathbf{W}_{\text{out}} = \mathbf{0}, \mathbf{b}_{\text{out}} = \mathbf{0}$). This ensures that at the initiation of training, $\mathbf{c} = \mathbf{0}$, mathematically defaulting the network's initial prediction to the empirical global mean calibration ratio:
+    \begin{equation}
+        R(\lambda) = \exp\left( \mu(\lambda) + \mathbf{c} \cdot \mathbf{B} \right),
+    \end{equation}
+    where $\mu(\lambda)$ and $\mathbf{B}$ represent the non-trainable pre-computed PCA mean and orthonormal basis matrices, respectively.
+    
+    
+\end{enumerate}
+
+To address the high-frequency polynomial ringing inherent to the blue edge of the Gaia XP spectra ($\lambda < 450$\text{~nm}), we expanded our architecture into an ensemble model. The primary framework, described above, predicts the global continuous absolute spectral response as a linear combination of Principal Components in logarithmic space. 
+
+However, to retain pixel-by-pixel resolution at the blue edge without being limited by the PCA dimensionality reduction, we introduced a specialized secondary network: the \textit{BlueWiggleNet}. This network exclusively processes the spectral channels below 450\text{~nm}. It utilizes a 1D Convolutional feature extractor (consisting of two 16-channel layers with a kernel size of 3) without pooling layers to preserve strict local spatial resolution. The flattened output is combined with the auxiliary stellar parameters and propagated through a 128-neuron hidden layer (regularized via a 20\% dropout) to predict localized log-corrections. These are transformed by applying an exponential activation layer to yield a strictly positive multiplicative correction factor, $R_{\text{blue}}(\lambda) = \exp(\text{MLP}_{\text{blue}})$. Because the output layer weights are zero-initialized, $R_{\text{blue}}(\lambda)$ strictly defaults to $1.0$ at the initiation of training.
+
+The final calibration is achieved by fusing both models, where the base prediction is fine-tuned by the blue network exclusively in the short-wavelength domain:
+\begin{equation}
+    R_{\text{final}}(\lambda) = 
+    \begin{cases} 
+        R_{\text{base}}(\lambda) \times R_{\text{blue}}(\lambda) & \text{if } \lambda < 450 \text{ nm} \\ 
+        R_{\text{base}}(\lambda) & \text{if } \lambda \ge 450 \text{ nm} 
+    \end{cases}.
+\end{equation}
+
+A complete schematic workflow of this hybrid architecture, illustrating the parallel processing through the Base PINN and the \textit{BlueWiggleNet} sub-network, is presented in Fig.~\ref{fig:pinn_architecture}.
+
+    
+\begin{figure*}[ht!]
+    \centering
+    \includegraphics[width=1\textwidth]{nn_arquitecture/directconvpinn_architecture.pdf}
+    \includegraphics[width=1\linewidth]{nn_arquitecture/bluewigglenet_architecture.pdf}
+    \caption{\textbf{Schematic workflow of the Physics-Informed Neural Network (PINN) architecture.} 
+    \textbf{Top panel (\textit{DirectConvPINN}):} Primary pipeline for global log-PCA flux calibration ratio reconstruction. The normalized input spectrum ($N = 343$ wavelength bins) and $P = 3$ standardized auxiliary inputs ($BP-RP$, $G$, $RUWE$) are processed through 1D convolutional and dense layers to predict $K = 20$ expansion coefficients ($c$). These coefficients are mapped onto a fixed, non-trainable PCA basis ($\mathbf{V}, \boldsymbol{\mu}$) to derive a strictly positive calibration ratio $R = \exp(\boldsymbol{\ell}) > 0$. 
+    \textbf{Bottom panel (\textit{BlueWiggleNet}):} Secondary sub-network dedicated to pixel-wise multiplicative corrections in the blue edge ($N_b = 57$ bins). Convolutional layers preserve wavelength sampling before concatenating auxiliary features, predicting a localized positive correction $R_{\text{blue}} = \exp(z)$ initialized to neutral scaling ($R_{\text{blue}} = 1$).}
+    \label{fig:pinn_architecture}
+\end{figure*}
+
+
+
+\subsection{Physics-Informed Loss Formulation}
+To optimize the network while preserving the physical characteristics of the instrumental response, we implemented a custom composite loss function consisting of three explicit terms:
+\begin{equation}
+    \mathcal{L}_{\text{total}} = \mathcal{L}_{\text{flux}} + \lambda_{\text{smooth}} \mathcal{L}_{\text{smooth}} + \lambda_{\text{reg}} \mathcal{L}_{\text{reg}}.
+\end{equation}
+
+The primary data-fidelity term, $\mathcal{L}_{\text{flux}}$, was upgraded to incorporate instrumental uncertainties, moving from an unweighted smooth L1 loss \citep{girshick2015fast}, a variant of Huber's robust loss formulation \citep{huber1964robust}, to an inverse-variance weighted formulation. To penalize errors proportionally to the instrument's confidence, we normalize inverse-variance weights across spectral channels for each star to prevent flux scale imbalances:
+\begin{equation}
+    \tilde{W}_i = \frac{1}{E_{\text{inst}, i} + \epsilon_{\text{err}}}, \quad W_i = \frac{\tilde{W}_i}{\frac{1}{N} \sum_{j=1}^{N} \tilde{W}_j},
+\end{equation}
+
+where $E_{\text{inst}, i}$ represents the Gaia instrumental flux error \citep{gaia_dr3_2023} and $\epsilon_{\text{err}}$ is a small machine-precision constant introduced to ensure numerical stability. For a spectrum with $N$ wavelength bins, the loss is formulated as:
+
+\begin{equation}
+    \mathcal{L}_{\text{flux}} = \frac{1}{N} \sum_{i=1}^{N} \text{SmoothL}_1\left( W_i \cdot \frac{Y_{\text{pred}}(\lambda_i) - Y_{\text{ref}}(\lambda_i)}{\max_{\lambda} |Y_{\text{ref}}(\lambda)| + \epsilon_{\text{scale}}}; \beta \right),
+\end{equation}
+where $\beta = 0.01$, $\epsilon_{\text{scale}} = 10^{-20}$ prevents division by zero in low-signal domains, and the predicted spectrum is derived as $Y_{\text{pred}} = X_{\text{Gaia}} \times R_{\text{pred}}$. This formulation transitions from an L2 penalty for small errors to an L1 penalty for larger variations, preventing extreme outliers from disproportionately biasing the gradients.
+
+The smoothness penalty, $\mathcal{L}_{\text{smooth}}$, calculates the mean squared error of the second derivative of the predicted continuous calibration ratio, $R_{\text{pred}}(\lambda)$. Approximated via discrete second-order finite differences \citep{eilers1996}, it is defined as:
+\begin{equation}
+    \mathcal{L}_{\text{smooth}} = \frac{1}{N-2} \sum_{i=2}^{N-1} \left( R_{\text{pred}}(\lambda_{i+1}) - 2R_{\text{pred}}(\lambda_i) + R_{\text{pred}}(\lambda_{i-1}) \right)^2.
+\end{equation}
+Key to this approach, this term targets the inferred calibration ratio directly rather than the predicted output flux $Y_{\text{pred}}$. This prevents the network from forcing unphysical smoothness onto the output spectra, which naturally inherit random instrumental noise from the Gaia input $X_{\text{Gaia}}$, while successfully attenuating spurious high-frequency vibrations in the calibration curve.
+
+As the last component for the base model, $\mathcal{L}_{\text{reg}}$ applies a Mean Squared Error (L2) regularization penalty directly to the $K$ predicted PCA coefficients ($c_j$) \citep{BailerJones1998}:
+\begin{equation}
+    \mathcal{L}_{\text{reg}} = \frac{1}{K} \sum_{j=1}^{K} c_j^2.
+\end{equation}
+This structural penalty prevents the network from assigning extreme weights to higher-order, noise-dominated components of the PCA basis.
+
+For the specialized BlueWiggleNet, the physical constraints were adapted to match its multiplicative nature. Rather than regularizing the network weights towards zero, the L2 regularization penalty ($\mathcal{L}_{\text{reg, blue}}$) specifically anchors the predicted correction factor towards a neutral identity value (1.0). This ensures that the network only applies corrections when statistically supported by the data:
+\begin{equation}
+    \mathcal{L}_{\text{reg, blue}} = \frac{1}{N_{\text{blue}}} \sum_{i=1}^{N_{\text{blue}}} (R_{\text{blue}}(\lambda_i) - 1.0)^2.
+\end{equation}
+An additional smoothness penalty via second-order finite differences is also applied to $R_{\text{blue}}$ in order to suppress non-physical high-frequency oscillations.
+
+It should be noted that the numerical stabilization constants ($\epsilon$) are intentionally scaled according to the characteristic dynamic range of their respective operational domains.
+
+
+\subsection{Training and Validation} \label{sec:train_val}
+To ensure optimal performance and robust generalization of the neural network, an additional quality selection was applied to the cross-matched dataset prior to training. Extremely red stars (e.g., late M-dwarfs with $G_{\text{BP}} - G_{\text{RP}} \gtrsim 1.5\text{ mag}$) were explicitly excluded from the training sample. Due to the historical bias of CALSPEC towards hot photometric standards, these cool, red targets are severely underrepresented in the catalog. Including such isolated cases would risk overfitting and introduce instabilities in the network's predictions. Consequently, the model was trained and validated exclusively on the well-sampled color domain, leaving the calibration of extreme late-type stars for a future expansion of the reference sample.
+
+Given the limited size of the cross-matched CALSPEC sample (an evaluation sample of 76 stars), the network's predictive capabilities were evaluated using a strict Leave-One-Out Cross-Validation (LOOCV) pipeline. For each iteration, a single target star was isolated for validation while the model trained on the remaining dataset.
+
+During the preprocessing of each LOOCV fold, to prevent numerical instabilities such as division by zero, the input Gaia spectra ($X_{\text{train}}$) were lower-bounded at a threshold of $10^{-16}$. The empirical calibration ratios for the training set ($R = Y_{\text{train}} / X_{\text{train}}$) were restricted to a bounded physical range of $R \in [0.1, 15.0]$. This clipping eliminates severe boundary noise without relying on aggressive Gaussian smoothing filters that would otherwise erase physical spectral wiggles. Instead, to gently regularize the high-frequency noise prior to basis extraction, a mild Gaussian filter ($\sigma = 0.5$) was applied exclusively to the log-transformed ratios. The PCA basis was then dynamically computed on these log-transformed ratios, retaining 20 principal components to effectively filter out random noise while preserving the systematic morphology inherent to the Gaia XP response.
+
+The training pipeline is executed in two sequential phases to ensure stability:
+
+\textbf{Phase 1:} The base model is trained for 600 epochs per fold using the Adam optimizer \citep{kingma2014adam} coupled with a Cosine Annealing learning rate scheduler \citep{loshchilov2016sgdr}, initialized with a constant learning rate of $10^{-3}$ and a weight decay of $10^{-4}$. To prevent gradient explosion during early training epochs, gradient norm clipping with a maximum threshold of $1.0$ ($\|\mathbf{g}\|_2 \le 1.0$) is applied, as shown by \citet{pascanu2013difficulty}. To strike an optimal balance between fitting the instrumental features and damping spurious high-frequency vibrations, both smoothing ($\lambda_{\text{smooth}}$) and regularization ($\lambda_{\text{reg}}$) hyperparameter weights are set to $10^{-4}$.
+
+\textbf{Phase 2:} The base model's weights are frozen, and the residual data is passed to the BlueWiggleNet. This specialized network is trained for 200 epochs using a separate Adam optimizer (initialized with a learning rate of $10^{-3}$, weight decay of $0.0$, $\lambda_{\text{reg\_blue}} = 10^{-3}$, and $\lambda_{\text{smooth\_blue}} = 10^{-4}$) to learn the fine-grained high-frequency features of the blue spectral edge ($< 450$\text{~nm}) without destabilizing the global continuum fit.
+
+The training progression and generalization capabilities of our framework are illustrated in Fig. \ref{fig:loss_curves}. During Phase 1, the base PINN exhibits rapid initial convergence, with both training and validation losses stabilizing smoothly over 600 epochs. The tight overlap between the training and validation curves confirms that the model generalizes well without overfitting across the primary spectral domain. Meanwhile, in Phase 2, the \textit{BlueWiggleNet} focuses on the high-variance blue edge. Here, the validation loss stabilizes safely while the training loss continues to decrease slightly. Terminating the training at 200 epochs prevents the sub-network from memorizing localized noise, ensuring a robust and physical fit.
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=\linewidth]{comparison_sample(loocv)/training_loss_phases.pdf}
+    \caption{Evolution of the loss function during the two-stage training process. The left panel displays the Base PINN (Phase 1) trained over 600 epochs, while the right panel shows the \textit{BlueWiggleNet} (Phase 2) trained over 200 epochs. Solid lines represent the training and validation losses, with shaded regions indicating the variance across the validation folds.}
+    \label{fig:loss_curves}
+\end{figure}
+
+
+\subsection{Final Model Export and Held-Out Verification} \label{sec:final_model}
+Once the architecture and hyperparameter choices were validated via the LOOCV scheme, a final model was trained using the full pipeline. To verify the integrity and inference capabilities of the exported model bundle (\texttt{model\_bundle.pt}), a reproducible held-out test set of $N_{\text{test}} = 10$ stars ($\approx 13\%$ of the cross-matched sample) was strictly isolated using a fixed random seed (42) to ensure reproducibility.
+
+The remaining non-reserved stars were used to independently fit the production PCA components, calculate the parameter standardization metrics (including RUWE median imputation), and train the final neural network ensemble. All these training-derived artifacts are packaged alongside the network weights into the final export bundle. This strict separation ensures that the held-out test set serves as a truly independent, end-to-end verification of the exported pipeline on completely unseen Gaia XP observations.
+
+
+\subsection{Evaluation Metrics and Baseline Comparison} \label{sec:MetricsEval}
+
+Standard unweighted relative metrics, such as the Mean Absolute Percentage Error (MAPE), are unsuitable for spectrophotometric evaluation due to numerical singularities in low-signal spectral wings and deep absorption features. To ensure robust performance assessment across the entire wavelength grid $[336, 1020]\text{ nm}$, we define a suite of complementary astrophysical metrics.
+
+To evaluate flux accuracy without scale-dependent bias, we define the Peak-Normalized Mean Absolute Error ($\text{PN-MAE}$) and Peak-Normalized Standard Deviation ($\text{PN-STD}$) relative to the maximum reference flux density $\|Y_{\text{ref}}\|_{\infty} = \max_i |Y_{\text{ref}}(\lambda_i)|$:
+\begin{equation}
+    \text{PN-MAE} (\%) = \frac{\frac{1}{N} \sum_{i=1}^{N} |Y_{\text{pred}}(\lambda_i) - Y_{\text{ref}}(\lambda_i)|}{\|Y_{\text{ref}}\|_{\infty}} \times 100,
+\end{equation}
+\begin{equation}
+    \text{PN-STD} (\%) = \frac{1}{\|Y_{\text{ref}}\|_{\infty}} \sqrt{\frac{1}{N} \sum_{i=1}^{N} \left( \Delta Y_i - \overline{\Delta Y} \right)^2} \times 100,
+\end{equation}
+where $\Delta Y_i = Y_{\text{pred}}(\lambda_i) - Y_{\text{ref}}(\lambda_i)$ represents the flux residual at wavelength bin $i$ and $\overline{\Delta Y}$ is the mean residual acrosss the spectrum.
+
+The quality of the fit is assessed utilizing the observational reduced chi-square ($\chi^2_\nu$), combining instrumental flux variances ($\sigma_{\text{inst}, i}^2$) and an empirical CALSPEC absolute systematic uncertainty floor, $f_{\text{sys}} = 0.01$, representing the typical ~1\% flux scale accuracy of STScI standards (\citealt{bohlin2014}, \citeyear{bohlin2020}) in quadrature:
+
+\begin{equation}
+    \chi^2_{\nu} = \frac{1}{\nu} \sum_{i=1}^{N} \frac{\left(Y_{\text{pred}}(\lambda_i) - Y_{\text{ref}}(\lambda_i)\right)^2}{\sigma_{\text{inst}, i}^2 + \left(f_{\text{sys}} \cdot Y_{\text{ref}}(\lambda_i)\right)^2},
+\end{equation}
+where $\nu = N - d$ represents the effective degrees of freedom, accounting for the dataset dimensionality ($N = 343$ wavelength bins) and the estimated number of free parameters ($d=25$).
+
+To quantify purely morphological continuum alignment independently of absolute flux scale offsets, we compute the Spectral Cosine Similarity ($S_c$):
+\begin{equation}
+    S_c = \frac{\mathbf{Y}_{\text{pred}} \cdot \mathbf{Y}_{\text{ref}}}{\|\mathbf{Y}_{\text{pred}}\|_2 \, \|\mathbf{Y}_{\text{ref}}\|_2} = \frac{\sum_{i=1}^{N} Y_{\text{pred}}(\lambda_i) \, Y_{\text{ref}}(\lambda_i)}{\sqrt{\sum_{i=1}^{N} Y_{\text{pred}}(\lambda_i)^2} \sqrt{\sum_{i=1}^{N} Y_{\text{ref}}(\lambda_i)^2}}.
+\end{equation}
+
+Then, to detect localized, wavelength-dependent calibration biases, we evaluate two complementary metrics across three contiguous optical passbands: Blue ($\lambda < 500\text{ nm}$), Green ($500 \le \lambda \le 700\text{ nm}$), and Red ($\lambda > 700\text{ nm}$). We compute the directional Mean Bias Error ($\text{MBE}_b$) in flux units, and the Normalized Photometric Bias ($\text{Bias}_{\text{norm}, b}$), which scales the integrated residual by the total reference flux within the specific band:
+
+\begin{equation}
+    \text{MBE}_b = \frac{1}{N_b} \sum_{\lambda_i \in \Lambda_b} \left( Y_{\text{pred}}(\lambda_i) - Y_{\text{ref}}(\lambda_i) \right),
+\end{equation}
+\begin{equation}
+    \text{Bias}_{\text{norm}, b} (\%) = \frac{\sum_{\lambda_i \in \Lambda_b} \left( Y_{\text{pred}}(\lambda_i) - Y_{\text{ref}}(\lambda_i) \right)}{\sum_{\lambda_i \in \Lambda_b} Y_{\text{ref}}(\lambda_i)} \times 100,
+\end{equation}
+where $N_b$ is the number of wavelength bins within the passband domain $\Lambda_b$.
+
+To establish a comparative benchmark, the model's performance is evaluated against the empirical Gaia DR3 XP calibration framework of \citet{huang2024}, which applies $G$-band magnitude polynomial corrections and empirical truncation rules, as well as against the raw, uncalibrated Gaia DR3 spectra.
+
+
+
+\section{Results} \label{sec:Results}
+
+\subsection{Global Spectrophotometric Performance}
+
+The predictive performance of the Physics-Informed Neural Network (PINN) was evaluated across the entire cross-matched CALSPEC sample using the Leave-One-Out Cross-Validation (LOOCV) framework. Table \ref{tab:global_metrics} summarizes the global distribution of the evaluation metrics defined in Section \ref{sec:MetricsEval}.
+
+\begin{table}[h]
+\caption{Global performance metrics of the PINN calibration evaluated via LOOCV. Values are reported as the global mean across all out-of-fold predictions.}
+\label{tab:global_metrics}
+\centering
+\begin{tabular}{lc}
+\hline\hline
+Metric & Mean \\
+\hline
+PN-MAE (\%) & 0.524 \\
+PN-STD (\%) & 0.9 \\
+$\chi^2_\nu$ & 0.856 \\
+Normalized Bias (MBE) (\%) & +0.014 \\
+Cosine Similarity ($S_c$) & 0.99966 \\
+\hline
+\end{tabular}
+\end{table}
+
+To illustrate the physical behavior of the network, Figure \ref{fig:canonical_example} presents detailed reconstructions for three representative CALSPEC standards: a hot WD, a metal-poor F-type star, and a solar-type star (Star Indices 001, 002, and 029). The top panels confirm that the PINN successfully recovers the absolute physical flux scale. More importantly, the bottom panels demonstrate the variance reduction: the PINN residuals are tightly centered around zero compared to both the uncalibrated Gaia BP/RP spectrum and the empirical baseline. Further examples of individual spectral reconstructions, demonstrating the model's consistent performance across a wide range of magnitudes and stellar types, are provided in Appendix \ref{appendix:spectral_gallery}.
+
+\begin{figure}[ht!]
+    \centering
+    \includegraphics[width=\hsize]{comparison_sample(loocv)/star_comparison_test_001.pdf}
+    \includegraphics[width=\hsize]{comparison_sample(loocv)/star_comparison_test_002.pdf}
+    \includegraphics[width=\hsize]{comparison_sample(loocv)/star_comparison_test_029.pdf}
+    \caption{Canonical spectral reconstructions for three representative CALSPEC standards (Star Indices 001, 002, and 029). For each star: \textit{Top:} Absolute flux density for the uncalibrated Gaia DR3 observation (blue), empirical baseline (green dashed), PINN prediction (red), and CALSPEC ground truth (black). \textit{Bottom:} Relative flux residuals (\%).}
+    \label{fig:canonical_example}
+\end{figure}
+
+
+
+
+\subsection{Dependency on Stellar Parameters}
+
+To ensure the calibration remains robust across the parameter space of our sample, we analyzed the residual distributions as a function of apparent brightness ($G$ magnitude) and color ($G_{\text{BP}} - G_{\text{RP}}$). While the neural network also ingests the Renormalised Unit Weight Error (RUWE) to account for potential astrometric noise or unresolved binarity, we restrict our visual grid to these primary photometric drivers of the spectral shape.
+
+Figure \ref{fig:residual_grid} displays a multi-panel grid evaluating the wavelength-dependent flux residuals normalized to the peak flux of each star. Columns split the sample into blue ($G_{\text{BP}} - G_{\text{RP}} < 0.3\text{~mag}$) and redder targets ($G_{\text{BP}} - G_{\text{RP}} \ge 0.3\text{~mag}$), while rows correspond to apparent magnitude bins (ranging from $G < 9.0\text{~mag}$ to $G \ge 13.0\text{~mag}$). Notably, the bottom-right panel is empty as our cross-matched sample does not contain any red targets ($G \ge 13.0\text{~mag}$ and $G_{\text{BP}} - G_{\text{RP}} \ge 0.3\text{~mag}$).
+
+To rigorously test the models, we selected challenging cases rather than average profiles for visualization. Specifically, each panel displays the single star within its respective bin that exhibits the maximum mean absolute error in the uncalibrated Gaia spectrum across the continuous regime ($500$-$950\text{~nm}$). Even in these extreme cases, the PINN (red line) consistently demonstrates superior stability compared to the uncalibrated Gaia spectra (blue line) and matches or improves upon the empirical baseline (green dashed line). For blue targets ($G_{\text{BP}} - G_{\text{RP}} < 0.3\text{~mag}$), where the baseline calibration is already well-behaved, the PINN preserves the high accuracy without introducing spurious features in the continuous spectrum ($500$-$1000\text{~nm}$).
+
+The advantage of the physical constraints becomes most evident in the redder regime ($G_{\text{BP}} - G_{\text{RP}} \ge 0.3\text{~mag}$, right column). In these targets, such as Idx: 068 and Idx: 058, the raw Gaia spectra exhibit prominent long-wavelength systematic oscillations. While the empirical baseline mitigates part of this distortion, the PINN effectively flattens these residuals down to the zero line. High-frequency oscillations below $450\text{~nm}$ remain visible across all methods, accurately reflecting the intrinsic polynomial ringing characteristic of Gaia XP spectra at low-flux edges rather than model overfitting.
+
+\begin{figure*}[ht!]
+    \centering
+    \includegraphics[width=\textwidth]{model_comparison/residual_grid_multipanel.pdf}
+    \caption{Multi-panel grid of flux residuals relative to peak flux (\%). Columns separate targets by $G_{\text{BP}} - G_{\text{RP}}$ color, and rows by $G$ magnitude. The annotation $N$ (e.g., $N=14$) indicates the total number of stars within that magnitude-color bin. To highlight performance on difficult targets, each subplot shows the wavelength-dependent residuals for a single extreme case: the star with the highest uncalibrated Gaia error between $500\text{ nm}$ and $950\text{ nm}$. Curves denote uncalibrated Gaia spectra (blue), the empirical baseline (green dashed), and the PINN (red). The PINN successfully suppresses systematic long-wavelength undulations in red targets while maintaining baseline precision in bright, blue standards.}
+    \label{fig:residual_grid}
+\end{figure*}
+
+
+\subsection{Wavelength-Dependent Residuals}
+
+While global metrics capture the average model behavior, instrumental artifacts in slitless spectroscopy are strictly wavelength-dependent. Figure \ref{fig:wave_residuals} displays the median fractional flux residuals (\%) along the continuous wavelength grid from 336 to 1020\text{~nm} for the entire validation sample. To better visualize the high-frequency oscillations at short wavelengths, the horizontal axis employs a reciprocal scale.
+
+The model achieves its highest precision in the central optical domain (450-800\text{~nm}). Crucially, the PINN successfully handles the overlap region between the BP and RP photometers ($\sim 630\text{ nm}$) without introducing non-physical discontinuities. The variance naturally increases at the extreme blue (< 400\text{~nm}) and red (> 950\text{~nm}) edges, matching the physical transmissivity drop of the Gaia CCDs. To specifically mitigate the aggressive ringing at the blue edge without being constrained by the PCA basis reduction, the framework dynamically routes the spectral channels below 450\text{~nm} through the specialized BlueWiggleNet, successfully stabilizing the median residuals in this high-variance regime.
+
+\begin{figure}[ht!]
+    \centering
+    \includegraphics[width=\hsize]{model_comparison/wavelength_residuals.pdf}
+    \caption{Median relative flux residuals (\%) as a function of wavelength. The shaded area indicates the interquartile range (25th to 75th percentiles) of the residual distribution across the LOOCV sample. The PINN (red) successfully suppresses the high-amplitude oscillations present in both the raw data (blue) and the empirical baseline (green) at the blue edge.}
+    \label{fig:wave_residuals}
+\end{figure}
+
+
+
+\subsection{Comparison with Baseline Calibrations}
+To contextualize the PINN's performance globally, the predictions were benchmarked against the raw Gaia DR3 observations and the empirical polynomial calibration established by \citet{huang2024}. For a consistent comparison, the empirical baseline predictions were generated utilizing the authors' native truncation scheme at the low-flux spectral edges. A notable shift in methodology was introduced by \citet{ye2025}, who incorporated neural networks into the calibration pipeline; nevertheless, as demonstrated in their work, the performance of that specific model remains analogous to that of the baseline established by \citet{huang2024}.
+
+As shown in Table \ref{tab:baseline_comparison}, the PINN architecture significantly reduces the Mean Bias Error (MBE) across all spectral regimes, achieving near-zero bias in the blue ($< 500\text{ nm}$) and central optical bands ($500$-$700\text{ nm}$). This demonstrates the effectiveness of the dedicated BlueWiggleNet at regularizing the problematic blue edge while preserving excellent overall photometric energy conservation.
+
+\begin{table}[htbp]
+    \centering
+    \caption{Band-specific Mean Bias Error (MBE) comparison between uncalibrated Gaia DR3 spectra, the empirical baseline \citep{huang2024}, and the proposed PINN calibration.}
+    \label{tab:baseline_comparison}
+    \resizebox{\columnwidth}{!}{
+        \begin{tabular}{lccc}
+            \hline \hline
+            Model & $\text{MBE}_{\text{Blue}}$ (\%) & $\text{MBE}_{\text{Green}}$ (\%) & $\text{MBE}_{\text{Red}}$ (\%) \\
+            & ($< 500\text{ nm}$) & ($500\text{--}700\text{ nm}$) & ($> 700\text{ nm}$) \\
+            \hline
+            Raw Gaia DR3 & -0.979 & -0.411 & +0.566 \\
+            Huang et al. (2024) & +0.145 & +0.258 & +0.227 \\
+            PINN (This work) & +0.025 & +0.006 & +0.320 \\
+            \hline
+        \end{tabular}
+    }
+\end{table}
+
+Complementing the low regional bias, Figure \ref{fig:boxplot_comparison} visualizes the total Peak-Normalized Mean Absolute Error (PN-MAE) distributions across the full spectrum. The deep learning approach achieves the lowest overall error—reducing the median PN-MAE to $\sim 0.47\%$ compared to $\sim 0.70\%$ for the empirical baseline and $\sim 1.02\%$ for uncalibrated Gaia spectra; while demonstrating a notably tighter interquartile range and suppressing severe outliers. This global morphological improvement highlights the value of directly injecting non-linear stellar parameters into the network physics.
+
+\begin{figure}[ht!]
+    \centering
+    \includegraphics[width=\hsize]{model_comparison/baseline_boxplot.pdf}
+    \caption{Distribution of the overall PN-MAE across the sample for the raw Gaia spectra, the \citet{huang2024} empirical calibration, and our PINN model. The box indicates the interquartile range (IQR), while whiskers extend to 1.5$\times$IQR. Outliers are plotted as individual points.}
+    \label{fig:boxplot_comparison}
+\end{figure}
+
+
+
+\subsection{Blind Test Set Evaluation} \label{sec:blind_test}
+
+To rigorously evaluate out-of-sample generalization, the exported calibration model was tested on the independent held-out test set ($N_{\text{test}} = 10$) using the metric suite defined in Section~\ref{sec:MetricsEval}. These targets were fully isolated prior to PCA basis extraction and backpropagation training.
+
+Table~\ref{tab:test_set_metrics} summarizes the performance across both global and regional passband metrics. The model achieves a global Peak-Normalized MAE ($\mathrm{PN\text{-}MAE}$) of $0.495\%$ and a Peak-Normalized Standard Deviation ($\mathrm{PN\text{-}STD}$) of $0.947\%$, closely matching the median LOOCV results reported in Table~\ref{tab:global_metrics} ($\mathrm{PN\text{-}MAE} = 0.524\%$). The reduced chi-square ($\chi^2_\nu = 0.627$) confirms that prediction residual variances remain within the combined instrumental and systematic noise floor, while the high Spectral Cosine Similarity ($S_c = 0.99968$) confirms near-perfect continuum shape conservation.
+
+\begin{table}[ht!]
+\caption{Quantitative performance of the final PINN model evaluated on the blind test set ($N_{\text{test}} = 10$) using the metrics defined in Section~\ref{sec:MetricsEval}.}
+\label{tab:test_set_metrics}
+\centering
+\begin{tabular}{lc}
+\hline\hline
+Metric & Value \\
+\hline
+$\mathrm{PN\text{-}MAE}$ (\%) & 0.495 \\
+$\mathrm{PN\text{-}STD}$ (\%) & 0.947 \\
+$\chi^2_\nu$ & 0.627 \\
+Spectral Cosine Similarity ($S_c$) & 0.99968 \\
+Blue Band Bias ($\lambda < 500\text{ nm}$, \%) & -0.252 \\
+Green Band Bias ($500 \le \lambda \le 700\text{ nm}$, \%) & +0.092 \\
+Red Band Bias ($\lambda > 700\text{ nm}$, \%) & +1.746 \\
+\hline
+\end{tabular}
+\end{table}
+
+Across individual passbands, the regional normalized photometric bias ($\mathrm{Bias}_{\mathrm{norm}, b}$) remains well-constrained across the spectrum. Notably, in the blue region ($\lambda < 500\text{ nm}$), where both noise and Gaia XP CCD polynomial ringing are most pronounced, the bias is limited to $\mathrm{Bias}_{\mathrm{norm, Blue}} = -0.252\%$. This demonstrates that the two-stage architecture successfully regularizes edge oscillations without introducing systematic offsets in the flux scale.
+
+Figure~\ref{fig:blind_test_duo} illustrates the spectral reconstructions for two representative targets from the blind test set covering different signal regimes. Across both cases, the PINN successfully recovers the absolute flux scale while drastically suppressing high-frequency ringing at the blue edge ($\lambda < 450\text{ nm}$). For full sample inspection, the spectral reconstructions and residual profiles for all 10 blind test targets are provided in Appendix~\ref{appendix:blind_gallery}.
+
+
+\begin{figure*}[ht!]
+    \centering
+    \includegraphics[width=0.48\linewidth]{test_sample/star_comparison_test_003.pdf}
+    \includegraphics[width=0.48\linewidth]{test_sample/star_comparison_test_002.pdf}
+    \caption{Representative spectral reconstructions from the held-out blind test set ($N_{\text{test}} = 10$). Top subpanels display absolute flux density comparing raw Gaia spectra (blue), empirical baseline (green dashed), PINN prediction (red), and CALSPEC reference (black). Bottom subpanels show relative flux residuals (\%).}
+    \label{fig:blind_test_duo}
+\end{figure*}
+
+
+\section{Discussion} \label{sec:Discussion}
+
+\subsection{Advantages of Physics-Informed Architectural Choices}
+The results presented in Section Section \ref{sec:Results} demonstrate that a purely data-driven approach is insufficient for robust spectrophotometric calibration when instrumental artifacts are highly non-linear. By enforcing strict physical constraints, specifically modeling the calibration ratio in logarithmic space and regularizing the Principal Component Analysis (PCA) basis, the PINN successfully avoids the unphysical over-corrections that often affect standard polynomial fits. Furthermore, the introduction of the specialized \textit{BlueWiggleNet} proves critical. As shown in Figure \ref{fig:residual_grid}, the raw Gaia DR3 spectra and empirical baselines exhibit severe high-frequency ringing below 450\text{~nm}. The PINN effectively dampens these artifacts while preserving the intrinsic absolute flux scale, highlighting the necessity of treating low-signal, high-variance spectral edges with dedicated, regularized networks rather than global polynomial expansions.
+
+\subsection{Limitations and the Red-End Sparsity Problem}
+Despite the global morphological improvements, our approach is inherently constrained by the underlying ground truth data. As noted in Section \ref{sec:train_val}, the CALSPEC catalog is historically biased towards hot, blue photometric standard stars (e.g., white dwarfs). Consequently, cool, late-type stars (such as M-dwarfs with $G_{\text{BP}}-G_{\text{RP}} \ge 1.5$ mag) are severely underrepresented in the reference sample. The network currently lacks sufficient statistical weight to confidently model the complex molecular bands characteristic of these extreme red targets. Extrapolating the current PINN weights into this uncharted color domain would likely introduce artificial distortions. Therefore, until the reference standard repositories expand their coverage of late-type stars, our calibration framework explicitly restricts its operational domain to the robustly sampled color space.
+
+\subsection{Scalability to Future Gaia Data Releases}
+Instrumental degradation and continuous variations in CCD transmissivity over time necessitate periodic re-calibration of space-based observatories. Unlike purely empirical piecewise models that require manual tuning of truncation limits and basis functions, our machine learning framework is structurally adaptable. By directly ingesting auxiliary stellar parameters (G magnitude, $G_{\mathrm{BP}} - G_{\mathrm{RP}}$ color, and RUWE) alongside the raw spectra, the PINN dynamically adjusts to the specific morphological distortions of individual targets. This structural flexibility ensures that the pipeline can be rapidly retrained and deployed for the upcoming Gaia DR4, seamlessly handling massive data volumes while strictly preserving energy conservation and astrophysical fidelity. Furthermore, complementing the CALSPEC reference sample with other consistent spectrophotometric datasets, such as LOWLIB, represents a natural and promising extension to further enhance sample coverage and model robustness.
+
+
+
+
+
+\section{Conclusions} \label{sec:conclusions}
+
+In this work, we presented a novel Machine Learning framework based on a Physics-Informed Neural Network (PINN) to derive the absolute spectrophotometric calibration of Gaia DR3 continuous BP/RP spectra. By leveraging the high-fidelity CALSPEC standard catalog and injecting strict physical constraints into the network's architecture, we successfully modeled the complex, non-linear instrumental response of the Gaia photometers. 
+
+Our main findings are as follows:
+
+\begin{itemize}[itemsep=0.25cm]
+    \item \textbf{Global Calibration Stability:} The PINN approach significantly improves upon purely empirical polynomial baselines. It achieves a median Peak-Normalized Mean Absolute Error (PN-MAE) of 0.524\% and a spectral cosine similarity of 0.99966 across the blind-test validation sample. The deep learning model demonstrates a tighter error distribution and a strong suppression of severe outliers.
+    
+    \item \textbf{Resolution of Blue-Edge Artifacts:} The introduction of a dedicated, high-resolution sub-network (the \textit{BlueWiggleNet}) successfully resolves the persistent high-amplitude ringing artifacts at the extreme blue edge ($\lambda < 450\text{ nm}$). By learning localized multiplicative corrections, the model flattens the residuals in this high-variance regime without introducing non-physical discontinuities in the continuous spectrum.
+    
+    \item \textbf{Robustness Across Parameter Space:} The framework demonstrates consistent performance across a broad photometric range. It effectively corrects systematic long-wavelength undulations in redder targets ($G_{\text{BP}} - G_{\text{RP}} \ge 0.3\text{ mag}$) while preserving the intrinsic precision of bright, blue standard stars.
+    
+    \item \textbf{Data-Driven Limitations:} Due to the historical composition of the CALSPEC catalog, the current calibration is intentionally restricted to the well-sampled color domain ($-0.54 \leq G_{\text{BP}} - G_{\text{RP}} \lesssim 1$ mag). Extreme late-type stars (e.g., $G_{\text{BP}} - G_{\text{RP}} \ge 1.5\text{ mag}$) are currently excluded to prevent the network from performing unconstrained, non-physical extrapolations.
+\end{itemize}
+
+Looking forward, this structurally flexible and computationally scalable framework is perfectly positioned to ingest larger reference datasets as they become available. It provides an open-source, mathematically robust foundation ready to be seamlessly adapted for the enhanced data volumes and revised instrumental profiles anticipated in the upcoming Gaia DR4.
+
+
+\begin{acknowledgements}
+   C.A.P. acknowledges financial support from the Spanish Ministry of Science, Innovation and Universities (MICIU), under grants PID2023-149982NB-I00 and PID2023-146453NB-I00, and from the Agencia Estatal de Investigación (AEI) through the Severo Ochoa Centre of Excellence accreditation awarded to the Instituto de Astrofísica de Canarias, grant CEX2025-001609-S, funded by MICIU/AEI/10.13039/501100011033.
+\end{acknowledgements}
+
+
+\begin{thebibliography}{aa}
+\setlength{\itemsep}{0.15cm}
+
+    %\bibitem[Baron et al.(2019)]{agarwal2022}
+    %Sen, S., Agarwal, S., Chakraborty, P., & Singh, K. P. 2022, Exp. Astron., 53, 1
+    %\href{https://link.springer.com/article/10.1007/s10686-021-09827-4}{link}
+    % Sección 1 (Introduction): aplicación de ML en astronomía
+
+        
+    \bibitem[Bailer-Jones et al.(1998)]{BailerJones1998}
+    Bailer-Jones, C. A. L., Irwin, M., \& von Hippel, T. 1998, MNRAS, 298, 361
+    \href{https://academic.oup.com/mnras/article/298/2/361/1056578}{link}
+
+    \bibitem[Bohlin et al.(2014)]{bohlin2014}
+    Bohlin, R. C., Gordon, K. D., \& Tremblay, P. E. 2014, PASP, 126, 711 \href{https://ui.adsabs.harvard.edu/abs/2014PASP..126..711B/abstract}{link}
+
+    \bibitem[Bohlin et al.(2022)]{bohlin2022}
+    Bohlin, R. C., \& Lockwood, S. 2022, Update of the STIS CTE Correction  Formula for Stellar Spectra, Instrument Science Report STIS 2022-7, 11 \href{https://www.stsci.edu/files/live/sites/www/files/home/hst/instrumentation/stis/documentation/instrument-science-reports/_documents/2022_07.pdf}{link}
+    
+    \bibitem[Bohlin et al.(2019)]{bohlin2019}
+    Bohlin, R. C., Deustua, S. E., \& de Rosa, G. 2019, AJ, 158, 211 \href{https://ui.adsabs.harvard.edu/abs/2019AJ....158..211B/abstract}{link}
+    
+    \bibitem[Bohlin et al.(2020)]{bohlin2020}
+    Bohlin, R. C., Hubeny, I., \& Rauch, T. 2020, AJ, 160, 21 \href{https://ui.adsabs.harvard.edu/abs/2020AJ....160...21B/abstract}{link}
+
+    \bibitem[Carrasco et al.(2021)]{carrasco2021}
+    Carrasco, J. M., Montegriffo, P., de Angeli, F., et al. 2021, A\&A, 652, A86
+    \href{https://ui.adsabs.harvard.edu/abs/2021A%26A...652A..86C/abstract}{link}
+
+    \bibitem[Connolly et al.(1995)]{connolly1995}
+    Connolly, A. J., Szalay, A. S., Bershady, M. A., et al. 1995, AJ, 110, 1071
+    % Sección 3.1 (Puntos sobre el PCA en espacio logarítmico): publicación clásica sobre la descomposición espectral en Componentes Principales (PCA) en astronomía. Justifica formalmente el uso de la base PCA para representar variaciones en la forma espectral
+    
+    \bibitem[De Angeli et al.(2023)]{de_angeli_2023}
+    De Angeli, F., Weiler, M., Montegriffo, P., et al. 2023, A\&A, 674, A2
+    \href{https://www.aanda.org/articles/aa/abs/2023/06/aa43680-22/aa43680-22.html}{link}
+    
+    \bibitem[DPAC CU5 \& DPCI(2022)]{gaiaxpy_2022}
+    DPAC CU5 \& DPCI 2022, GaiaXPy: A tool for working with Gaia BP/RP spectra, Zenodo
+    \href{https://www.cosmos.esa.int/web/gaia/gaiaxpy}{link}
+
+    \bibitem[Eilers et al.(1996)]{eilers1996}
+    Eilers, P. H. C., \& Marx, B. D. 1996, Statistical Science, 11, 89
+    \href{https://www.scirp.org/reference/referencespapers?referenceid=3333682}{link}
+    % Sección 3.2 (Physics-Informed Loss Formulation): Trabajo de referencia sobre penalizaciones por diferencias finitas de segundo orden para garantizar curvas suaves. Apoya la formulación matemática del término de suavizado
+
+    \bibitem[ESA(2026)]{gaia_dr4_web}
+    European Space Agency. 2026, Gaia Data Release 4 Overview
+    \href{https://www.cosmos.esa.int/web/gaia/dr4}{link}
+
+    \bibitem[Gaia Collaboration et al.(2023)]{gaia_dr3_2023}
+    Gaia Collaboration, Vallenari, A., Brown, A. G. A., et al. 2023, A\&A, 674, A1
+    \href{https://www.aanda.org/articles/aa/abs/2023/06/aa43940-22/aa43940-22.html}{link}
+    
+    \bibitem[Girshick(2015)]{girshick2015fast}
+    Girshick, R. 2015, in IEEE International Conference on Computer Vision (ICCV), 1440 \href{https://openaccess.thecvf.com/content_iccv_2015/html/Girshick_Fast_R-CNN_ICCV_2015_paper.html}{link}
+    
+    \bibitem[Hendrycks \& Gimpel(2016)]{hendrycks2016gelu}
+    Hendrycks, D., \& Gimpel, K. 2016, arXiv:1606.08415
+    \href{https://arxiv.org/abs/1606.08415}{link}
+    
+    \bibitem[Huang et al.(2024)]{huang2024}
+    Huang, B., Yuan, H., Xiang, M., et al. 2024, ApJS, 271, 13 \href{https://ui.adsabs.harvard.edu/abs/2024ApJS..271...13H/abstract}{link}
+
+    \bibitem[Karniadakis et al.(2021)]{karniadakis2021}
+    Karniadakis, G. E., Kevrekidis, I. G., Lu, L., et al. 2021, Nature Reviews Physics, 3, 422
+    % Sección 3.1 (Neural Network Architecture) o Sección 5.1 (Advantages of Physics-Informed...): respaldo teórico a la decisión de embeber restricciones físicas (como la positividad del flujo o el espacio logarítmico) directamente en la red neural
+    
+    \bibitem[Kingma \& Ba(2015)]{kingma2014adam}
+    Kingma, D. P., \& Ba, J. 2015, in 3rd International Conference on Learning Representations (ICLR) "Adam: A Method for Stochastic Optimization"
+    \href{https://arxiv.org/abs/1412.6980}{link}
+    
+    \bibitem[Loshchilov \& Hutter(2017)]{loshchilov2016sgdr}
+    Loshchilov, I., \& Hutter, F. 2017, in 5th International Conference on Learning Representations (ICLR)
+    \href{https://arxiv.org/abs/1608.03983}{link}
+    
+    \bibitem[Montegriffo et al.(2023)]{montegriffo2023gaia}
+    Montegriffo, P., De Angeli, F., Andrae, R., et al. 2023, A\&A, 674, A33 \href{https://www.aanda.org/articles/aa/abs/2023/06/aa43709-22/aa43709-22.html}{link}
+
+    \bibitem[Ness et al.(2015)]{ness2015}
+    Ness, M., Hogg, D. W., Rix, H. W., et al. 2015, ApJ, 808, 16
+    \href{https://iopscience.iop.org/article/10.1088/0004-637X/808/1/16}{link}
+    % Sección 1 (Introduction) o Sección 5.1: trabajo referente en el modelado data-driven de espectros estelares mediante parametrización flexible. (comparación para justificar el uso de la aproximación en lugar de modelos espectrales sintéticos puros)
+
+    \bibitem[Pancino et al.(2012)]{pancino2012}
+    Pancino, E., Altavilla, G., Marinoni, S., et al. 2012, MNRAS, 426, 1767
+    % Sección 2.1 (The CALSPEC sample): para contextualizar la necesidad de calibraciones externas y fundamentar el uso de catálogos estándar independientes
+
+    \bibitem[Pancino et al.(2022)]{pancino2022}
+    Pancino, E., Altavilla, G., Marinoni, S., et al. 2022, MNRAS, 512, 3660
+    \href{https://ui.adsabs.harvard.edu/abs/2022yCat..75033660P/abstract}{link}
+    
+    \bibitem[Pascanu et al.(2013)]{pascanu2013difficulty}
+    Pascanu, R., Mikolov, T., \& Bengio, Y. 2013, in International Conference on Machine Learning (ICML), 1310 \href{https://proceedings.mlr.press/v28/pascanu13.html}{link}
+
+    \bibitem[Huber et al.(1964)]{huber1964robust}
+    Peter J. Huber. "Robust Estimation of a Location Parameter." Ann. Math. Statist. 35 (1) 73 - 101, March, 1964. https://doi.org/10.1214/aoms/1177703732
+    \href{https://openaccess.thecvf.com/content_iccv_2015/html/Girshick_Fast_R-CNN_ICCV_2015_paper.html}{link}
+    
+    %\bibitem[Raissi et al.(2019)]{raissi2019pinn}
+    %Raissi, M., Perdikaris, P., \& Karniadakis, G. E. 2019, Journal of %Computational Physics, 378, 686 %\href{https://www.sciencedirect.com/science/article/pii/S0021999118307125}{link}
+
+    \bibitem[Riello et al.(2021)]{riello2021}
+    Riello, M., De Angeli, F., Evans, D. W., et al. 2021, A\&A, 649, A3
+    \href{https://ui.adsabs.harvard.edu/abs/2021A%26A...649A...3R/abstract}{link}
+    % Sección 2.2 (Gaia observations): procesamiento fotométrico de Gaia (EDR3/DR3) y errores sistemático
+    
+    \bibitem[Ye et al.(2025)]{ye2025} 
+    Ye, X., Wu, W., Allende Prieto, C., et al. 2025, A\&A \href{https://www.aanda.org/articles/aa/full_html/2025/08/aa54410-25/aa54410-25.html}{link}
+
+\end{thebibliography}
+
+
+
+\begin{appendix}
+
+\section{Gallery of individual spectral reconstructions}
+\label{appendix:spectral_gallery}
+
+This appendix provides additional individual reconstructions generated by our Physics-Informed Neural Network (PINN) across diverse targets in the cross-matched CALSPEC dataset. Each panel illustrates the absolute flux calibration (top), relative residuals (bottom), and the residual density distribution alongside its best-fit Gaussian profile (right), demonstrating consistent performance across different magnitude ranges and effective temperatures.
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=0.48\textwidth]{comparison_sample(loocv)/star_comparison_test_000.pdf}\hfill
+    \includegraphics[width=0.48\textwidth]{comparison_sample(loocv)/star_comparison_test_003.pdf}\\[0.2cm]
+    \includegraphics[width=0.48\textwidth]{comparison_sample(loocv)/star_comparison_test_007.pdf}\hfill
+    \includegraphics[width=0.48\textwidth]{comparison_sample(loocv)/star_comparison_test_008.pdf}\\[0.2cm]
+    \includegraphics[width=0.48\textwidth]{comparison_sample(loocv)/star_comparison_test_009.pdf}\hfill
+    \includegraphics[width=0.48\textwidth]{comparison_sample(loocv)/star_comparison_test_012.pdf}\\[0.2cm]
+    \includegraphics[width=0.48\textwidth]{comparison_sample(loocv)/star_comparison_test_013.pdf}\hfill
+    \includegraphics[width=0.48\textwidth]{comparison_sample(loocv)/star_comparison_test_015.pdf}
+    \caption{Spectral reconstructions and flux residuals for eight representative targets from the CALSPEC dataset. \textbf{Top subpanels}: Absolute flux density $f_\lambda$ ($\text{W}\,\text{m}^{-2}\,\text{nm}^{-1}$) as a function of wavelength, comparing uncalibrated Gaia DR3 observations (blue), the empirical baseline of \citet{huang2024} (green dashed), our PINN model prediction (red), and the ground-truth CALSPEC reference spectra (black). \textbf{Bottom subpanels}: Relative percentage flux residuals ($\%$) across the continuous wavelength range ($336$--$1020\text{~nm}$). Across diverse stellar effective temperatures and brightness levels, the PINN architecture consistently suppresses high-frequency blue-edge ringing ($\lambda < 450\text{~nm}$) and flattens continuum undulations.}
+    \label{fig:appendix_gallery_1}
+\end{figure*}
+
+
+
+\section{Blind Test Set Spectral Gallery} \label{appendix:blind_gallery}
+
+In this section, we present the complete set of spectral reconstructions and relative flux residuals for all $N_{\text{test}} = 10$ targets comprising the independent blind test set. Figure \ref{fig:full_test_gallery} demonstrates the consistent performance of the PINN model across diverse stellar types and brightness levels, confirming the absence of overfitting across the evaluation sample.
+
+\begin{figure*}[ht!]
+    \centering
+    \includegraphics[width=0.48\linewidth]{test_sample/star_comparison_test_000.pdf} \hfill
+    \includegraphics[width=0.48\linewidth]{test_sample/star_comparison_test_001.pdf} \\[1ex]
+    \includegraphics[width=0.48\linewidth]{test_sample/star_comparison_test_002.pdf} \hfill
+    \includegraphics[width=0.48\linewidth]{test_sample/star_comparison_test_003.pdf} \\[1ex]
+    \includegraphics[width=0.48\linewidth]{test_sample/star_comparison_test_004.pdf} \hfill
+    \includegraphics[width=0.48\linewidth]{test_sample/star_comparison_test_005.pdf} \\[1ex]
+    \includegraphics[width=0.48\linewidth]{test_sample/star_comparison_test_006.pdf} \hfill
+    \includegraphics[width=0.48\linewidth]{test_sample/star_comparison_test_007.pdf} \\[1ex]
+
+\end{figure*}
+
+\begin{figure*}[ht!]
+    \centering
+    
+    \includegraphics[width=0.48\linewidth]{test_sample/star_comparison_test_008.pdf} \hfill
+    \includegraphics[width=0.48\linewidth]{test_sample/star_comparison_test_009.pdf}
+    \caption{Complete spectral reconstruction gallery for the 10 held-out blind test targets ($N_{\text{test}} = 10$). \textbf{Top subpanels}: Absolute flux density $f_\lambda$ across $336$--$1020\text{~nm}$ comparing uncalibrated Gaia DR3 observations (blue), the empirical baseline of \citet{huang2024} (green dashed), our PINN calibration (red), and the ground-truth CALSPEC reference spectra (black). \textbf{Bottom subpanels}: Corresponding relative percentage residuals (\%) relative to CALSPEC. The PINN model consistently eliminates blue-edge ringing ($\lambda < 450\text{~nm}$) and provides sub-percent accuracy across diverse stellar effective temperatures.}
+    
+    \label{fig:full_test_gallery}
+\end{figure*}
+
+
+\end{appendix}
+
+\end{document}

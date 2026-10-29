@@ -40,9 +40,14 @@ from src.utils.visualize_models_performance.plot_model_comparison import (
 )
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_DATA_DIR = PROJECT_ROOT / "data/processed/nn_data"
+DEFAULT_MODEL_DIR = PROJECT_ROOT / "results/models/full_pinn_training/all_samples"
+
+
 def train_full_pinn(
-    data_dir: str | Path,
-    output_dir: str | Path,
+    data_dir: str | Path = DEFAULT_DATA_DIR,
+    output_dir: str | Path = DEFAULT_MODEL_DIR,
     num_components: int = 20,
     lambda_smooth: float = 1e-4,
     lambda_reg: float = 1e-4,
@@ -63,11 +68,30 @@ def train_full_pinn(
 
     Defaults match candidate 12 from the hyperparameter search, with both
     network widths fixed at 128 and BP-RP, G and RUWE as auxiliary inputs.
-    This performs one fit, with the seed set once at the start.
+    This performs one fit, with the seed set once at the start. The default
+    ``n_test_samples=0`` refits the ensemble, PCA, and feature normalization
+    on all available samples after hyperparameter selection and validation.
+
+    Returns
+    -------
+    dict of str to Any
+        Training configuration and export locations. ``model_dir`` is the
+        absolute directory accepted by ``calibrate_gaia_spectrum``;
+        ``model_bundle_path`` identifies its self-contained checkpoint.
+        ``trained_on_all_samples`` records whether any stars were reserved.
+        Returning the network object is unnecessary for file-based inference.
+
+    Examples
+    --------
+    >>> result = train_full_pinn()
+    >>> from src.experiments.inference.gaia_inference import calibrate_gaia_spectrum
+    >>> wave, flux = calibrate_gaia_spectrum(
+    ...     "2462426800883134336", model_dir=result["model_dir"]
+    ... )
     """
     set_seed(random_state)
-    data_dir = Path(data_dir)
-    out_dir = Path(output_dir)
+    data_dir = Path(data_dir).expanduser().resolve()
+    out_dir = Path(output_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if device is None:
@@ -175,6 +199,10 @@ def train_full_pinn(
         wave_grid=wave,
     ).to(device)
 
+    ensemble.eval()
+    bundle_path = out_dir / "model_bundle.pt"
+    trained_on_all_samples = len(test_indices) == 0
+
     ensemble_state = ensemble.state_dict()
     torch.save(ensemble_state, out_dir / "model_ensemble_state.pth")
     torch.save({
@@ -191,7 +219,11 @@ def train_full_pinn(
         "num_params": params.shape[1],
         "input_dim": X.shape[1],
         "hidden_dim": hidden_dim,
-    }, out_dir / "model_bundle.pt")
+        "trained_on_all_samples": trained_on_all_samples,
+        "n_samples": n_samples,
+        "n_train_samples": len(train_indices),
+        "n_test_samples": len(test_indices),
+    }, bundle_path)
 
     config = {
         "random_state": random_state,
@@ -224,6 +256,9 @@ def train_full_pinn(
         "blue_mask_n_channels": num_blue_channels,
         "data_dir": str(data_dir),
         "output_dir": str(out_dir),
+        "model_dir": str(out_dir),
+        "model_bundle_path": str(bundle_path),
+        "trained_on_all_samples": trained_on_all_samples,
     }
 
     with open(out_dir / "training_config.json", "w", encoding="utf-8") as f:
@@ -270,14 +305,14 @@ def train_full_pinn(
 
     print(f"[✓] Full PINN training complete.")
     print(f"[✓] Artifacts saved to: {out_dir}")
+    print(f"[✓] Inference bundle: {bundle_path}")
     return config
 
 
 if __name__ == "__main__":
-    # Winning search configuration: candidate 12, training seed 42.
     train_full_pinn(
-        data_dir=Path("data/processed/nn_data"),
-        output_dir=Path("results/models/full_pinn_training/10_eps_test_samples"),
+        data_dir=DEFAULT_DATA_DIR,
+        output_dir=DEFAULT_MODEL_DIR,
         num_components=20,
         lambda_smooth=1e-4,
         lambda_reg=1e-4,
@@ -290,6 +325,6 @@ if __name__ == "__main__":
         weight_decay_blue=0.0,
         lambda_reg_blue=1e-3,
         lambda_smooth_blue=1e-4,
-        n_test_samples=10,
+        n_test_samples=0,
         device=None,
     )
